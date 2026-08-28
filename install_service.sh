@@ -10,7 +10,14 @@ DEST="$HOME/.config/systemd/user"
 case "${1:-install}" in
   install)
     mkdir -p "$DEST"
-    cp systemd/btcwatch.service systemd/btcwatch.timer "$DEST/"
+    # ユニット内の %h/Programs/btcwatch を実際の配置先に合わせる
+    case "$PWD" in
+      "$HOME"/*) here="%h/${PWD#"$HOME"/}" ;;
+      *)         here="$PWD" ;;
+    esac
+    sed "s|%h/Programs/btcwatch|$here|g" systemd/btcwatch.service \
+        > "$DEST/btcwatch.service"
+    cp systemd/btcwatch.timer "$DEST/"
     systemctl --user daemon-reload
     systemctl --user enable --now btcwatch.timer
     # ログアウト後も動かす (既に有効なら何もしない)

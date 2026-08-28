@@ -1,0 +1,3 @@
+# advisor.py / notify_discord.py / watch_loop.sh は標準ライブラリのみで動く。
+# ここに書いてあるのは地形図(plot_terrain.py)を描く場合にだけ必要なもの。
+matplotlib>=3.8,<4

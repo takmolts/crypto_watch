@@ -23,17 +23,38 @@ Deribit のオプション建玉から BTC の「地形」(壁・支持・磁石
 | `watch_loop.sh` | 定期実行の本体。定時考察・クールダウン・日次上限を管理 |
 | `run_watch.sh` | 手動で1回だけ通す (自動運転の状態を触らない) |
 | `install_service.sh` | systemd --user の timer として登録/解除 |
+| `requirements.txt` | 作図に必要なものだけ (matplotlib) |
 
 ## セットアップ
 
 ```bash
-cp .env.example .env        # DISCORD_WEBHOOK を書く
-python3 -m venv .venv       # 作図する場合のみ (matplotlib)
-.venv/bin/pip install matplotlib
-./install_service.sh install
+git clone git@github.com:takmolts/crypto_watch.git
+cd crypto_watch
+cp .env.example .env                        # DISCORD_WEBHOOK を書く
+
+python3 -m venv .venv                       # 作図する場合のみ
+.venv/bin/pip install -r requirements.txt
+
+./install_service.sh install                # systemd --user の timer に登録
 ```
 
-`advisor.py` 本体は標準ライブラリのみで動く。matplotlib が無い場合は作図だけスキップする。
+`advisor.py` / `notify_discord.py` / シェル側は**標準ライブラリのみ**で動く。
+`requirements.txt` の matplotlib は地形図を描く場合にだけ必要で、無ければ作図だけ
+スキップして通知は続行する。
+
+シェルスクリプトは `.venv/bin/python3` があればそれを使い、無ければ `python3` に
+フォールバックする。
+
+### 別マシンに移すときの前提
+
+- `claude` CLI にログイン済みであること (`claude -p` を使う)
+- 図に日本語を出すなら CJK フォント。Debian/Ubuntu なら
+  `sudo apt install fonts-noto-cjk` (無い場合は自動で DejaVu Sans にフォールバック
+  するが、日本語が豆腐になる)
+- 配置先は任意。`install_service.sh` が systemd ユニットのパスを実際の場所に
+  書き換える (ホーム配下なら `%h/...` として記録する)
+- 前のマシンの観測履歴を引き継ぐなら `~/.btc_oi_advisor/` をコピーする。
+  `BTC_baseline.json` が無い場合、初回実行は必ず考察が走る
 
 ## 発火条件
 

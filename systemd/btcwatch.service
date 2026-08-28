@@ -5,13 +5,14 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-WorkingDirectory=/home/takmolts/Programs/btcwatch
+# %h = ホームディレクトリ。install_service.sh が実際の配置先に書き換える
+WorkingDirectory=%h/Programs/btcwatch
 # claude CLI は ~/.local/bin にあるので PATH を明示する
-Environment=PATH=/home/takmolts/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=MODE=section
 Environment="SCHEDULE=8 20"
 Environment=COOLDOWN_MIN=120
 Environment=MAX_PER_DAY=8
-ExecStart=/home/takmolts/Programs/btcwatch/watch_loop.sh once
+ExecStart=%h/Programs/btcwatch/watch_loop.sh once
 # claude -p のWeb検索込みで数分かかるため長めに
 TimeoutStartSec=900
