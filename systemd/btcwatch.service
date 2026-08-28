@@ -1,0 +1,17 @@
+[Unit]
+Description=BTC OI watcher (毎時観測 / 条件付きで考察してDiscordへ通知)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/takmolts/Programs/btcwatch
+# claude CLI は ~/.local/bin にあるので PATH を明示する
+Environment=PATH=/home/takmolts/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=MODE=section
+Environment="SCHEDULE=8 20"
+Environment=COOLDOWN_MIN=120
+Environment=MAX_PER_DAY=8
+ExecStart=/home/takmolts/Programs/btcwatch/watch_loop.sh once
+# claude -p のWeb検索込みで数分かかるため長めに
+TimeoutStartSec=900

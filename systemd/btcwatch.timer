@@ -1,0 +1,12 @@
+[Unit]
+Description=btcwatch を毎時実行
+
+[Timer]
+OnCalendar=hourly
+# 停止中に跨いだ回は起動後に1回だけ拾う
+Persistent=true
+RandomizedDelaySec=120
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target
