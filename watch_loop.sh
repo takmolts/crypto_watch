@@ -28,33 +28,43 @@ INTERVAL="${INTERVAL:-3600}"
 SCHEDULE="${SCHEDULE-8 20}"   # 空文字を渡すと定時考察を無効化できる
 COOLDOWN_MIN="${COOLDOWN_MIN:-120}"
 MAX_PER_DAY="${MAX_PER_DAY:-8}"
+CURRENCY="${CURRENCY:-BTC}"
 TH_SPOT="${TH_SPOT:-2.0}"
 TH_GEX="${TH_GEX:-15}"
-TH_OI="${TH_OI:-3000}"
+# 単一ストライクOI(枚)は通貨で桁が違う (ETHは1枚=1ETHで枚数が一桁多い)
+TH_OI="${TH_OI:-$([ "$CURRENCY" = "ETH" ] && echo 20000 || echo 3000)}"
 TH_HL_OI="${TH_HL_OI:-10}"
 MODE="${MODE:-section}"
 NOTIFY="${NOTIFY:-1}"
-CURRENCY="${CURRENCY:-BTC}"
 
 STATE_DIR="${STATE_DIR:-$HOME/.btc_oi_advisor}"
 LOG_DIR="${LOG_DIR:-logs}"
 mkdir -p "$STATE_DIR" "$LOG_DIR"
 LOGFILE="$LOG_DIR/watch.log"
-LOCK="$STATE_DIR/watch.lock"
-LAST_FIRE="$STATE_DIR/last_fire"        # epoch秒
-DAY_COUNT="$STATE_DIR/day_count"        # "YYYY-MM-DD count"
-SCHED_MARK="$STATE_DIR/last_sched"      # "YYYY-MM-DD 8 20" (今日済ませた定時)
+# 状態は通貨別に持つ (BTC/ETH を並走させるため)
+LOCK="$STATE_DIR/watch.$CURRENCY.lock"
+LAST_FIRE="$STATE_DIR/last_fire.$CURRENCY"    # epoch秒
+DAY_COUNT="$STATE_DIR/day_count.$CURRENCY"    # "YYYY-MM-DD count"
+SCHED_MARK="$STATE_DIR/last_sched.$CURRENCY"  # "YYYY-MM-DD 8 20" (今日済ませた定時)
+# 通貨サフィックスが無かった頃の状態ファイルを BTC 用として引き継ぐ
+if [ "$CURRENCY" = "BTC" ]; then
+    for f in last_fire day_count last_sched; do
+        [ -f "$STATE_DIR/$f" ] && [ ! -e "$STATE_DIR/$f.BTC" ] \
+            && mv "$STATE_DIR/$f" "$STATE_DIR/$f.BTC"
+    done
+fi
 
-PROMPT='このデータを考察して。今日の重要イベント(FOMC・雇用統計・要人発言など)をWeb検索で確認し、地形とイベントリスクを統合した見解を出して'
+PROMPT="この${CURRENCY}のデータを考察して。今日の重要イベント(FOMC・雇用統計・要人発言など)をWeb検索で確認し、地形とイベントリスクを統合した見解を出して"
 
-log() { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" | tee -a "$LOGFILE" >&2; }
+log() { printf '[%s] [%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$CURRENCY" "$*" \
+        | tee -a "$LOGFILE" >&2; }
 
 # ---------------------------------------------------------------- 1回分
 
 run_once() {
     local force_flag="${1:-}"
     local stamp rpt force="" reason_sched=""
-    stamp=$(date -u +%Y%m%d-%H%M%S)
+    stamp="$CURRENCY-$(date -u +%Y%m%d-%H%M%S)"
     rpt="$LOG_DIR/report-$stamp.txt"
     local png="$LOG_DIR/terrain-$stamp.png"
 
@@ -137,7 +147,8 @@ run_once() {
             [ -s "${png%.png}.caption.txt" ] && \
                 img+=(--image-caption "${png%.png}.caption.txt")
         fi
-        if "$PY" notify_discord.py --mode "$MODE" --file "$analysis" \
+        if "$PY" notify_discord.py --mode "$MODE" --currency "$CURRENCY" \
+                --file "$analysis" \
                 "${img[@]}" --attach-source --attach "$rpt" 2>>"$LOGFILE"; then
             log "Discord へ送信: $analysis"
         else

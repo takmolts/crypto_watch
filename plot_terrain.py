@@ -46,7 +46,7 @@ def _usd(x):
 
 
 def render(path, spot, book, m, g, instruments, now, net_gex_at=None,
-           hl_depth=None):
+           hl_depth=None, price_hist=None, currency="BTC"):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -72,9 +72,69 @@ def render(path, spot, book, m, g, instruments, now, net_gex_at=None,
     if not strikes:
         return None
 
-    fig, (ax1, ax2) = plt.subplots(
-        1, 2, figsize=(15, 8.5), dpi=110, sharey=True,
-        gridspec_kw={"width_ratios": [1.5, 1], "wspace": 0.06})
+    # 値動きパネル(任意)は独自の縮尺を持つため、地形2枚とは sharey しない
+    if price_hist:
+        fig = plt.figure(figsize=(18, 8.5), dpi=110)
+        gs = fig.add_gridspec(1, 3, width_ratios=[0.85, 1.5, 1], wspace=0.2)
+        ax0 = fig.add_subplot(gs[0])
+        ax1 = fig.add_subplot(gs[1])
+        ax2 = fig.add_subplot(gs[2], sharey=ax1)
+    else:
+        ax0 = None
+        fig, (ax1, ax2) = plt.subplots(
+            1, 2, figsize=(15, 8.5), dpi=110, sharey=True,
+            gridspec_kw={"width_ratios": [1.5, 1], "wspace": 0.06})
+
+    # ---------------- 左端: 直近の値動き (1h足) ----------------
+    if ax0 is not None:
+        from datetime import datetime, timezone
+        import matplotlib.dates as mdates
+
+        ts = [datetime.fromtimestamp(t / 1000, tz=timezone.utc)
+              for t in price_hist["t"]]
+        close = price_hist["close"]
+        ax0.fill_between(ts, price_hist["low"], price_hist["high"],
+                         color=GRID, alpha=0.9)
+        ax0.plot(ts, close, color=INK, lw=1.6)
+
+        # 縮尺: 値動きのレンジに、近傍(±8%以内)の壁/支持だけ取り込む
+        plo, phi = min(price_hist["low"]), max(price_hist["high"])
+        wall = m["call_walls"][0][0] if m.get("call_walls") else None
+        sup = m["put_supports"][0][0] if m.get("put_supports") else None
+        if wall and wall <= spot * 1.08:
+            phi = max(phi, wall)
+        if sup and sup >= spot * 0.92:
+            plo = min(plo, sup)
+        pad = (phi - plo) * 0.07
+        ax0.set_ylim(plo - pad, phi + pad)
+
+        def level(y, text, color):
+            if not (plo - pad <= y <= phi + pad):
+                return
+            ax0.axhline(y, color=color, lw=1.2, ls=(0, (4, 3)))
+            ax0.annotate(text, xy=(ts[0], y),
+                         xytext=(ts[0], y + (phi - plo) * 0.012),
+                         color=color, fontsize=9.5, ha="left", va="bottom")
+
+        if wall:
+            level(wall, f"壁 ${wall:,.0f}", CALL)
+        if sup:
+            level(sup, f"支持 ${sup:,.0f}", PUT)
+        ax0.axhline(spot, color=INK, lw=1.0, alpha=0.5)
+
+        hours = (ts[-1] - ts[0]).total_seconds() / 3600
+        ax0.set_title(f"直近{hours:.0f}時間の値動き — 縮尺は右2枚と異なる",
+                      color=INK, fontsize=13, pad=14, loc="left")
+        ax0.xaxis.set_major_locator(mdates.DayLocator())
+        ax0.xaxis.set_major_formatter(mdates.DateFormatter("%m/%d"))
+        ax0.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"${v:,.0f}"))
+        ax0.tick_params(axis="y", labelsize=10)
+        ax0.set_xlabel(f"{currency}-PERPETUAL 1h足 (UTC)", color=MUTED,
+                       labelpad=10)
+        ax0.grid(lw=0.8, alpha=0.4)
+        ax0.set_axisbelow(True)
+        for s in ("top", "right"):
+            ax0.spines[s].set_visible(False)
 
     # ---------------- 左: ストライク別 OI (Put=左 / Call=右) ----------------
     gaps = [b - a for a, b in zip(strikes, strikes[1:])] or [1000]
@@ -110,9 +170,9 @@ def render(path, spot, book, m, g, instruments, now, net_gex_at=None,
         ax1.annotate(text, xy=(book[k]["call"] + pad, k + _dy(k)), color=color,
                      fontsize=10.5, va="center", ha="left")
 
-    def note_left(k, text, color):
-        ax1.annotate(text, xy=(-book[k]["put"] - pad, k + _dy(k)), color=color,
-                     fontsize=10.5, va="center", ha="right")
+    def note_left(k, text, color, dy=0.0):
+        ax1.annotate(text, xy=(-book[k]["put"] - pad, k + _dy(k) + dy),
+                     color=color, fontsize=10.5, va="center", ha="right")
 
     if m.get("call_walls"):
         k = m["call_walls"][0][0]
@@ -125,7 +185,11 @@ def render(path, spot, book, m, g, instruments, now, net_gex_at=None,
     if m.get("max_pain") and lo <= m["max_pain"] <= hi:
         k = m["max_pain"]
         if k in book:
-            note_left(k, f"◎ Max Pain ${k:,.0f}", INK_2)
+            # 支持と同じストライクなら注記を下にずらして重なりを避ける
+            dy = (-(hi - lo) * 0.022
+                  if m.get("put_supports") and m["put_supports"][0][0] == k
+                  else 0.0)
+            note_left(k, f"◎ Max Pain ${k:,.0f}", INK_2, dy)
 
     # 現値。右側は壁の注記と衝突しうるので左の余白に置く
     for ax in (ax1, ax2):
@@ -190,15 +254,17 @@ def render(path, spot, book, m, g, instruments, now, net_gex_at=None,
     if hl_depth:
         sub += (f" ・ HL板±2% 買{_usd(hl_depth['bid2'])}"
                 f"/売{_usd(hl_depth['ask2'])}")
-    fig.suptitle("BTC オプション地形", color=INK, fontsize=17,
+    src = "Deribit 全満期の建玉 / GEXは mark IV からの自前計算"
+    if ax0 is not None:
+        src = "値動きは無期限先物の1h足 ・ " + src
+    fig.suptitle(f"{currency} オプション地形", color=INK, fontsize=17,
                  x=0.045, y=0.975, ha="left")
     fig.text(0.045, 0.933, sub, color=MUTED, fontsize=11, ha="left")
-    fig.text(0.045, 0.022,
-             f"Deribit 全満期の建玉 / GEXは mark IV からの自前計算 ・ "
-             f"{now:%Y-%m-%d %H:%M UTC}",
+    fig.text(0.045, 0.022, f"{src} ・ {now:%Y-%m-%d %H:%M UTC}",
              color=MUTED, fontsize=9.5, ha="left")
 
-    fig.subplots_adjust(top=0.87, bottom=0.10, left=0.075, right=0.975)
+    fig.subplots_adjust(top=0.87, bottom=0.10,
+                        left=0.055 if ax0 is not None else 0.075, right=0.975)
     fig.savefig(path)
     plt.close(fig)
     return path

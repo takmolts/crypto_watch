@@ -1,5 +1,5 @@
 [Unit]
-Description=btcwatch を毎時実行
+Description=btcwatch (%i) を毎時実行
 
 [Timer]
 OnCalendar=hourly

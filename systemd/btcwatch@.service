@@ -1,5 +1,5 @@
 [Unit]
-Description=BTC OI watcher (毎時観測 / 条件付きで考察してDiscordへ通知)
+Description=%i OI watcher (毎時観測 / 条件付きで考察してDiscordへ通知)
 After=network-online.target
 Wants=network-online.target
 
@@ -9,6 +9,7 @@ Type=oneshot
 WorkingDirectory=%h/Programs/btcwatch
 # claude CLI は ~/.local/bin にあるので PATH を明示する
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=CURRENCY=%i
 Environment=MODE=section
 Environment="SCHEDULE=8 20"
 Environment=COOLDOWN_MIN=120

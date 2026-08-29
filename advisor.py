@@ -137,6 +137,23 @@ def fetch_hl_depth(currency):
         return None
 
 
+def fetch_price_history(currency, hours=72):
+    """無期限先物の1時間足 (直近hours時間)。失敗したら None"""
+    try:
+        end = int(time.time() * 1000)
+        start = end - hours * 3600 * 1000
+        r = api_get("public/get_tradingview_chart_data",
+                    {"instrument_name": f"{currency}-PERPETUAL",
+                     "start_timestamp": start, "end_timestamp": end,
+                     "resolution": 60})
+        if r.get("status") != "ok" or not r.get("ticks"):
+            return None
+        return {"t": r["ticks"], "close": r["close"],
+                "high": r["high"], "low": r["low"]}
+    except Exception:
+        return None
+
+
 def fetch_dvol(currency):
     """DVOL(ボラティリティ指数)の直近値。失敗したらNone"""
     try:
@@ -860,8 +877,12 @@ def main():
     if args.plot:
         try:
             import plot_terrain
+            hist = fetch_price_history(args.currency)
+            if hist is None:
+                print("価格履歴の取得に失敗 (値動きパネルは省略)", file=sys.stderr)
             plot_terrain.render(args.plot, spot, book, m, g, instruments, now,
-                                net_gex_at=net_gex_at, hl_depth=depth)
+                                net_gex_at=net_gex_at, hl_depth=depth,
+                                price_hist=hist, currency=args.currency)
             cap = plot_terrain.caption(spot, book, m, g)
             cap_path = os.path.splitext(args.plot)[0] + ".caption.txt"
             with open(cap_path, "w", encoding="utf-8") as f:

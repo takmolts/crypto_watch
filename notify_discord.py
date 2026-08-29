@@ -302,7 +302,10 @@ def main():
         os.path.dirname(os.path.abspath(__file__)), ".env"))
     ap.add_argument("--webhook", default=None, help="DISCORD_WEBHOOK を上書き")
     ap.add_argument("--content", default=None, help="embed の前に置く本文")
-    ap.add_argument("--username", default="BTC OI Advisor")
+    ap.add_argument("--currency", default="BTC",
+                    help="ヘッダ表記と DISCORD_WEBHOOK_<通貨> の選択に使う")
+    ap.add_argument("--username", default=None,
+                    help="既定: '<通貨> OI Advisor'")
     ap.add_argument("--attach", action="append", default=[], metavar="FILE",
                     help="テキストファイルを添付する (複数指定可)")
     ap.add_argument("--image", default=None, metavar="PNG",
@@ -322,10 +325,16 @@ def main():
         sys.exit(1)
 
     env = load_env(args.env)
-    webhook = args.webhook or os.environ.get("DISCORD_WEBHOOK") \
-        or env.get("DISCORD_WEBHOOK")
+    cur = args.currency.upper()
+    # 通貨別チャンネル: DISCORD_WEBHOOK_<通貨> があれば優先、無ければ共通にフォールバック
+    webhook = (args.webhook
+               or os.environ.get(f"DISCORD_WEBHOOK_{cur}")
+               or env.get(f"DISCORD_WEBHOOK_{cur}")
+               or os.environ.get("DISCORD_WEBHOOK")
+               or env.get("DISCORD_WEBHOOK"))
     if not webhook and not args.dry_run:
-        print("DISCORD_WEBHOOK が見つかりません (.env を確認)", file=sys.stderr)
+        print(f"DISCORD_WEBHOOK_{cur} / DISCORD_WEBHOOK が見つかりません "
+              "(.env を確認)", file=sys.stderr)
         sys.exit(1)
 
     now = datetime.now(timezone.utc)
@@ -338,7 +347,8 @@ def main():
         sys.exit(1)
 
     header = args.content if args.content is not None else \
-        f"**BTC 地形 × イベントリスク考察**  `{now:%Y-%m-%d %H:%M UTC}`"
+        f"**{cur} 地形 × イベントリスク考察**  `{now:%Y-%m-%d %H:%M UTC}`"
+    username = args.username or f"{cur} OI Advisor"
 
     image = args.image if (args.image and os.path.exists(args.image)) else None
     if args.image and not image:
@@ -370,7 +380,7 @@ def main():
         image=image)
 
     for i, group in enumerate(msgs):
-        payload = {"username": args.username, "embeds": group}
+        payload = {"username": username, "embeds": group}
         if i == 0 and header:
             payload["content"] = header[:2000]
         attach = files if i == 0 else None
