@@ -45,7 +45,8 @@ def _usd(x):
     return f"${x:.0f}"
 
 
-def render(path, spot, book, m, g, instruments, now, net_gex_at=None):
+def render(path, spot, book, m, g, instruments, now, net_gex_at=None,
+           hl_depth=None):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -186,6 +187,9 @@ def render(path, spot, book, m, g, instruments, now, net_gex_at=None):
         sub += f" ・ ネットGEX {_usd(net)}/1%"
     if m.get("magnets"):
         sub += f" ・ 最大の磁力 ${m['magnets'][0][0]:,.0f}"
+    if hl_depth:
+        sub += (f" ・ HL板±2% 買{_usd(hl_depth['bid2'])}"
+                f"/売{_usd(hl_depth['ask2'])}")
     fig.suptitle("BTC オプション地形", color=INK, fontsize=17,
                  x=0.045, y=0.975, ha="left")
     fig.text(0.045, 0.933, sub, color=MUTED, fontsize=11, ha="left")

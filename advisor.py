@@ -99,6 +99,44 @@ def fetch_hyperliquid(currency):
     return None
 
 
+def _fetch_hl_l2book(currency, n_sig_figs):
+    """Hyperliquid の板 (L2)。nSigFigs で価格を丸めて集約した段が返る"""
+    body = json.dumps({"type": "l2Book", "coin": currency.upper(),
+                       "nSigFigs": n_sig_figs}).encode()
+    req = urllib.request.Request(
+        HL_API, data=body,
+        headers={"Content-Type": "application/json",
+                 "User-Agent": "oi-advisor/1.0"}, method="POST")
+    with urllib.request.urlopen(req, timeout=20) as r:
+        return json.loads(r.read().decode())["levels"]   # [bids, asks]
+
+
+def fetch_hl_depth(currency):
+    """
+    HL板の厚み(USD建て)を mid±2% / ±5% で集計。失敗したら None。
+
+    l2Book は最大20段/片側しか返さないため、細かい丸め(3桁)で±2%を、
+    粗い丸め(2桁)で±5%をカバーする。スナップショット値なので見せ板は拾いうる。
+    """
+    try:
+        def depth_within(levels, pct):
+            bids, asks = levels
+            mid = (float(bids[0]["px"]) + float(asks[0]["px"])) / 2
+            lo, hi = mid * (1 - pct), mid * (1 + pct)
+            bid = sum(float(l["px"]) * float(l["sz"])
+                      for l in bids if float(l["px"]) >= lo)
+            ask = sum(float(l["px"]) * float(l["sz"])
+                      for l in asks if float(l["px"]) <= hi)
+            return mid, bid, ask
+
+        mid, bid2, ask2 = depth_within(_fetch_hl_l2book(currency, 3), 0.02)
+        _, bid5, ask5 = depth_within(_fetch_hl_l2book(currency, 2), 0.05)
+        return {"mid": mid, "bid2": bid2, "ask2": ask2,
+                "bid5": bid5, "ask5": ask5}
+    except Exception:
+        return None
+
+
 def fetch_dvol(currency):
     """DVOL(ボラティリティ指数)の直近値。失敗したらNone"""
     try:
@@ -293,7 +331,8 @@ def snap_dir(base=None):
     return d
 
 
-def build_snapshot(currency, m, g, funding, dvol, book, now, hl=None):
+def build_snapshot(currency, m, g, funding, dvol, book, now, hl=None,
+                   depth=None):
     return {
         "ts": now.isoformat(),
         "currency": currency,
@@ -309,6 +348,7 @@ def build_snapshot(currency, m, g, funding, dvol, book, now, hl=None):
         "hl_funding_8h": (hl or {}).get("funding_8h"),
         "hl_oi": (hl or {}).get("oi"),
         "hl_premium": (hl or {}).get("premium"),
+        "hl_depth": depth,
         "strikes": {str(int(k)): {"call": v["call"], "put": v["put"]}
                     for k, v in book.items()},
     }
@@ -391,7 +431,7 @@ def save_baseline(d, currency, snap):
     os.replace(tmp, baseline_path(d, currency))
 
 
-def evaluate_triggers(base, cur, book, now, th_spot, th_gex, th_oi):
+def evaluate_triggers(base, cur, book, now, th_spot, th_gex, th_oi, th_hl_oi):
     """前回発火時点(base)と今(cur)を比べて、発火理由のリストを返す"""
     reasons = []
 
@@ -412,6 +452,20 @@ def evaluate_triggers(base, cur, book, now, th_spot, th_gex, th_oi):
         # ノイズ除け: どちらかが十分な大きさを持つ符号反転だけ拾う
         if bf * cf < 0 and max(abs(bf), abs(cf)) >= 0.002:
             reasons.append(f"ファンディング符号反転 ({bf:+.4f}% → {cf:+.4f}%)")
+
+    # HL無期限の建玉急変 (レバレッジ勢の参入/退出)
+    if base.get("hl_oi") and cur.get("hl_oi"):
+        chg = (cur["hl_oi"] - base["hl_oi"]) / base["hl_oi"] * 100
+        if abs(chg) >= th_hl_oi:
+            reasons.append(f"HL建玉 {chg:+.1f}% "
+                           f"({base['hl_oi']:,.0f} → {cur['hl_oi']:,.0f}枚)")
+
+    # HLプレミアム(mark-oracle乖離)の符号反転 = 足元の圧力の向きが変わった
+    bp, cp_ = base.get("hl_premium"), cur.get("hl_premium")
+    if bp is not None and cp_ is not None:
+        # ノイズ除け: どちらかが十分な大きさを持つ反転だけ拾う
+        if bp * cp_ < 0 and max(abs(bp), abs(cp_)) >= 0.03:
+            reasons.append(f"HLプレミアム符号反転 ({bp:+.3f}% → {cp_:+.3f}%)")
 
     # ガンマフリップをスポットが跨いだ
     bflip, cflip = base.get("flip"), cur.get("flip")
@@ -440,7 +494,7 @@ def evaluate_triggers(base, cur, book, now, th_spot, th_gex, th_oi):
     return reasons
 
 
-def verbalize_diff(prev, m, g, funding, dvol, book, now, hl=None):
+def verbalize_diff(prev, m, g, funding, dvol, book, now, hl=None, depth=None):
     out = []
     ts = datetime.fromisoformat(prev["ts"])
     hours = (now - ts).total_seconds() / 3600.0
@@ -466,6 +520,10 @@ def verbalize_diff(prev, m, g, funding, dvol, book, now, hl=None):
     if hl and prev.get("hl_funding_8h") is not None:
         out.append(f"・HLファンディング(8h換算): {prev['hl_funding_8h']:+.4f}% "
                    f"→ {hl['funding_8h']:+.4f}%")
+    pd = prev.get("hl_depth")
+    if depth and pd:
+        out.append(f"・HL板(±2%): 買い {fmt_usd(pd['bid2'])} → {fmt_usd(depth['bid2'])}"
+                   f" / 売り {fmt_usd(pd['ask2'])} → {fmt_usd(depth['ask2'])}")
 
     # ストライク別OIの増減 上位
     movers = []
@@ -508,7 +566,7 @@ def verbalize_diff(prev, m, g, funding, dvol, book, now, hl=None):
     return "\n".join(out)
 
 
-def verbalize_extras(funding, dvol, hl=None):
+def verbalize_extras(funding, dvol, hl=None, depth=None):
     out = []
     if funding is not None:
         if funding > 0.03:
@@ -552,6 +610,24 @@ def verbalize_extras(funding, dvol, hl=None):
             d = "買い" if hl["premium"] > 0 else "売り"
             out.append(f"・HLプレミアム: {hl['premium']:+.3f}% — "
                        f"現物指数から乖離、足元は{d}圧力")
+
+    # HL板の厚み (瞬間値。HL単体の吸収力であって市場全体ではない)
+    if depth:
+        out.append(f"・HL板の厚み: ±2%以内 買い {fmt_usd(depth['bid2'])} / "
+                   f"売り {fmt_usd(depth['ask2'])} ・ "
+                   f"±5%以内 買い {fmt_usd(depth['bid5'])} / "
+                   f"売り {fmt_usd(depth['ask5'])}")
+        b, a = depth["bid5"], depth["ask5"]
+        if b > 0 and a > 0:
+            r = b / a
+            if r >= 1.6:
+                note = "買い板が厚い。下は受け止められやすく、上に動くほうが軽い"
+            elif r <= 1 / 1.6:
+                note = "売り板が厚い。上値は重く、下の受けが薄い"
+            else:
+                note = "上下の板は概ね均衡"
+            out.append(f"・HL板バランス(±5%): 買い/売り = {r:.2f} — {note}"
+                       "(瞬間値のため見せ板を含みうる)")
     return "\n".join(out)
 
 
@@ -696,6 +772,8 @@ def main():
                     help="発火閾値: ABS GEX 変化率%% (既定 15.0)")
     ap.add_argument("--th-oi", type=float, default=3000.0,
                     help="発火閾値: 単一ストライクのOI変化(枚) (既定 3000)")
+    ap.add_argument("--th-hl-oi", type=float, default=10.0,
+                    help="発火閾値: HL無期限の建玉変化率%% (既定 10.0)")
     ap.add_argument("--plot", default=None, metavar="PNG",
                     help="地形図をPNGに描く (matplotlib が必要)")
     ap.add_argument("--defer-baseline", action="store_true",
@@ -727,6 +805,9 @@ def main():
     hl = fetch_hyperliquid(args.currency)
     if hl is None:
         print("Hyperliquid の取得に失敗 (その分は省略)", file=sys.stderr)
+    depth = fetch_hl_depth(args.currency)
+    if depth is None:
+        print("Hyperliquid 板の取得に失敗 (その分は省略)", file=sys.stderr)
 
     m = analyze(book, spot)
     g = compute_gex(instruments, spot) if instruments else None
@@ -735,18 +816,20 @@ def main():
     parts = [verbalize(m)]
     if g:
         parts.append(verbalize_gex(g, spot))
-    extras = verbalize_extras(funding, dvol, hl)
+    extras = verbalize_extras(funding, dvol, hl, depth)
     if extras:
         parts.append("── 需給・ボラ補助指標 ──\n" + extras)
 
     d = snap_dir(args.snap_dir)
     prev = load_prev_snapshot(d, args.currency)
     if prev:
-        parts.append(verbalize_diff(prev, m, g, funding, dvol, book, now, hl))
+        parts.append(verbalize_diff(prev, m, g, funding, dvol, book, now, hl,
+                                    depth))
     else:
         print("(初回実行: 次回から前回比が出ます)", file=sys.stderr)
 
-    snap = build_snapshot(args.currency, m, g, funding, dvol, book, now, hl)
+    snap = build_snapshot(args.currency, m, g, funding, dvol, book, now, hl,
+                          depth)
 
     # ---- トリガー判定 ----
     fired, reasons = True, []
@@ -756,7 +839,8 @@ def main():
             reasons = ["初回実行(基準スナップショットなし)"]
         else:
             reasons = evaluate_triggers(base, snap, book, now,
-                                        args.th_spot, args.th_gex, args.th_oi)
+                                        args.th_spot, args.th_gex, args.th_oi,
+                                        args.th_hl_oi)
             fired = bool(reasons)
         if args.force and not fired:
             fired, reasons = True, ["定時実行(--force)"]
@@ -777,7 +861,7 @@ def main():
         try:
             import plot_terrain
             plot_terrain.render(args.plot, spot, book, m, g, instruments, now,
-                                net_gex_at=net_gex_at)
+                                net_gex_at=net_gex_at, hl_depth=depth)
             cap = plot_terrain.caption(spot, book, m, g)
             cap_path = os.path.splitext(args.plot)[0] + ".caption.txt"
             with open(cap_path, "w", encoding="utf-8") as f:

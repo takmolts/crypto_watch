@@ -10,7 +10,7 @@
 #   SCHEDULE="8 20"          定時考察の時刻(ローカル時, 空で無効)
 #   COOLDOWN_MIN=120         トリガー発火の最短間隔(分)。定時考察は対象外
 #   MAX_PER_DAY=8            1日あたりの考察回数の上限
-#   TH_SPOT=2.0 TH_GEX=15 TH_OI=3000   発火閾値
+#   TH_SPOT=2.0 TH_GEX=15 TH_OI=3000 TH_HL_OI=10   発火閾値
 #   MODE=section             Discord embed の整形モード
 #   NOTIFY=1                 0 にすると Discord へ送らない(ログのみ)
 #
@@ -31,6 +31,7 @@ MAX_PER_DAY="${MAX_PER_DAY:-8}"
 TH_SPOT="${TH_SPOT:-2.0}"
 TH_GEX="${TH_GEX:-15}"
 TH_OI="${TH_OI:-3000}"
+TH_HL_OI="${TH_HL_OI:-10}"
 MODE="${MODE:-section}"
 NOTIFY="${NOTIFY:-1}"
 CURRENCY="${CURRENCY:-BTC}"
@@ -79,6 +80,7 @@ run_once() {
     "$PY" advisor.py --currency "$CURRENCY" --check --defer-baseline $force \
         --out "$rpt" --plot "$png" \
         --th-spot "$TH_SPOT" --th-gex "$TH_GEX" --th-oi "$TH_OI" \
+        --th-hl-oi "$TH_HL_OI" \
         >/dev/null 2>>"$LOGFILE"
     local rc=$?
 
