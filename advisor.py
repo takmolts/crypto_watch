@@ -137,6 +137,87 @@ def fetch_hl_depth(currency):
         return None
 
 
+ETF_MAP = {"BTC": "IBIT", "ETH": "ETHA"}
+CBOE_API = "https://cdn.cboe.com/api/global/delayed_quotes/options/"
+
+
+def parse_occ_symbol(sym):
+    """'IBIT281215P00020000' -> (expiry_date, strike, 'C'/'P')。不正なら None"""
+    try:
+        strike = int(sym[-8:]) / 1000.0
+        cp = sym[-9]
+        if cp not in "CP":
+            return None
+        y = 2000 + int(sym[-15:-13])
+        mo, dd = int(sym[-13:-11]), int(sym[-11:-9])
+        # 満期は米国市場の引け後
+        return datetime(y, mo, dd, 21, 0, tzinfo=timezone.utc), strike, cp
+    except Exception:
+        return None
+
+
+def fetch_etf_terrain(currency, d, max_age_h=18.0):
+    """
+    米国現物ETF (IBIT/ETHA) のオプション建玉地形。CBOEの15分遅延データ。
+    OIは日次更新なので d にキャッシュし、max_age_h より新しければ再取得しない。
+    取得失敗時は古いキャッシュで続行。対象外通貨・完全失敗は None。
+    """
+    sym = ETF_MAP.get(currency.upper())
+    if not sym:
+        return None
+    cache = os.path.join(d, f"{currency}_etf.json")
+    old = None
+    try:
+        with open(cache) as f:
+            old = json.load(f)
+        age = time.time() - datetime.fromisoformat(old["fetched"]).timestamp()
+        if age < max_age_h * 3600:
+            return old
+    except Exception:
+        pass
+
+    try:
+        req = urllib.request.Request(CBOE_API + f"{sym}.json",
+                                     headers={"User-Agent": "oi-advisor/1.0"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            data = json.loads(r.read().decode())["data"]
+        now = datetime.now(timezone.utc)
+        price = float(data["current_price"])
+        strikes = defaultdict(lambda: {"call": 0.0, "put": 0.0,
+                                       "call_w": 0.0, "put_w": 0.0})
+        expiries = defaultdict(lambda: {"call": 0.0, "put": 0.0})
+        tc = tp = 0.0
+        for o in data.get("options", []):
+            parsed = parse_occ_symbol(o.get("option", ""))
+            oi = float(o.get("open_interest") or 0)
+            if not parsed or oi <= 0:
+                continue
+            exp, strike, cp = parsed
+            days = max((exp - now).total_seconds() / 86400.0, 0.05)
+            w = 1.0 / math.sqrt(days / 7.0 + 1.0)   # 遠いLEAPSを減点 (book と同じ)
+            s = strikes[str(strike)]
+            key = "call" if cp == "C" else "put"
+            s[key] += oi
+            s[key + "_w"] += oi * w
+            expiries[exp.strftime("%Y-%m-%d")][key] += oi
+            if cp == "C":
+                tc += oi
+            else:
+                tp += oi
+        if not strikes:
+            return old
+        etf = {"symbol": sym, "fetched": now.isoformat(), "price": price,
+               "total_call": tc, "total_put": tp, "strikes": dict(strikes),
+               "expiries": dict(expiries)}
+        tmp = cache + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(etf, f)
+        os.replace(tmp, cache)
+        return etf
+    except Exception:
+        return old
+
+
 def fetch_price_history(currency, hours=72):
     """無期限先物の1時間足 (直近hours時間)。失敗したら None"""
     try:
@@ -277,6 +358,66 @@ def compute_gex(instruments, spot):
             "top_strikes": [(k, v["call"] + v["put"]) for k, v in top]}
 
 
+def norm_cdf(x):
+    """標準正規分布の累積分布関数"""
+    return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+
+
+def bs_d1(spot, strike, iv, years):
+    return ((math.log(spot / strike) + 0.5 * iv * iv * years)
+            / (iv * math.sqrt(years)))
+
+
+def compute_vol_structure(instruments, spot):
+    """
+    ATM IVの期間構造(7d/30d/90d)と25Δスキュー(30d近辺のリスクリバーサル)。
+    mark IVからの自前計算。データ不足なら None。
+    """
+    exps = defaultdict(list)
+    for strike, cp, oi, iv, years in instruments:
+        if iv > 0 and years > 0.003:        # 満期1日未満はIVが歪むので除外
+            exps[round(years, 6)].append((strike, cp, iv))
+    if not exps:
+        return None
+
+    def atm_iv(rows):
+        near = sorted(rows, key=lambda r: abs(r[0] - spot))[:4]
+        return sum(r[2] for r in near) / len(near)
+
+    def iv_at_delta(rows, years, cp, target):
+        best_err, best_iv = None, None
+        for strike, c, iv in rows:
+            if c != cp:
+                continue
+            d1 = bs_d1(spot, strike, iv, years)
+            delta = norm_cdf(d1) if cp == "C" else norm_cdf(d1) - 1.0
+            err = abs(delta - target)
+            if best_err is None or err < best_err:
+                best_err, best_iv = err, iv
+        return best_iv
+
+    tenors, skew = {}, None
+    for label, days in (("7d", 7), ("30d", 30), ("90d", 90)):
+        yrs = min(exps, key=lambda y: abs(y * 365 - days))
+        if abs(yrs * 365 - days) > days:    # 目標テナーから離れすぎなら欠測
+            continue
+        rows = exps[yrs]
+        tenors[label] = {"days": yrs * 365, "atm": atm_iv(rows) * 100}
+        if label == "30d":
+            p = iv_at_delta(rows, yrs, "P", -0.25)
+            c = iv_at_delta(rows, yrs, "C", 0.25)
+            if p and c:
+                skew = (p - c) * 100        # volポイント。正=Put割高
+    if not tenors:
+        return None
+    out = {"tenors": tenors, "skew_25d": skew}
+    if "7d" in tenors and "90d" in tenors:
+        out["term_slope"] = tenors["90d"]["atm"] - tenors["7d"]["atm"]
+    else:
+        out["term_slope"] = None
+    return out
+
+
 def proximity(spot, strike, band=0.25):
     """現値からの近さ(0..1)。band=25%離れるとほぼ0。ATMガンマ集中の近似。"""
     x = abs(strike - spot) / (spot * band)
@@ -349,7 +490,7 @@ def snap_dir(base=None):
 
 
 def build_snapshot(currency, m, g, funding, dvol, book, now, hl=None,
-                   depth=None):
+                   depth=None, vs=None, etf=None):
     return {
         "ts": now.isoformat(),
         "currency": currency,
@@ -366,6 +507,9 @@ def build_snapshot(currency, m, g, funding, dvol, book, now, hl=None,
         "hl_oi": (hl or {}).get("oi"),
         "hl_premium": (hl or {}).get("premium"),
         "hl_depth": depth,
+        "skew_25d": (vs or {}).get("skew_25d"),
+        "term_slope": (vs or {}).get("term_slope"),
+        "etf": etf,
         "strikes": {str(int(k)): {"call": v["call"], "put": v["put"]}
                     for k, v in book.items()},
     }
@@ -388,7 +532,7 @@ def prune_snapshots(d, currency, keep_days):
     for f in os.listdir(d):
         if not (f.startswith(f"{currency}_") and f.endswith(".json")):
             continue
-        if f == f"{currency}_baseline.json":
+        if f in (f"{currency}_baseline.json", f"{currency}_etf.json"):
             continue
         path = os.path.join(d, f)
         try:
@@ -403,7 +547,8 @@ def prune_snapshots(d, currency, keep_days):
 def load_prev_snapshot(d, currency):
     """最新のスナップショットを返す(なければNone)"""
     files = sorted(f for f in os.listdir(d)
-                   if f.startswith(f"{currency}_") and f.endswith(".json"))
+                   if f.startswith(f"{currency}_") and f.endswith(".json")
+                   and f != f"{currency}_etf.json")   # ETFキャッシュは対象外
     if not files:
         return None
     try:
@@ -448,7 +593,8 @@ def save_baseline(d, currency, snap):
     os.replace(tmp, baseline_path(d, currency))
 
 
-def evaluate_triggers(base, cur, book, now, th_spot, th_gex, th_oi, th_hl_oi):
+def evaluate_triggers(base, cur, book, now, th_spot, th_gex, th_oi, th_hl_oi,
+                      th_skew, th_etf_oi):
     """前回発火時点(base)と今(cur)を比べて、発火理由のリストを返す"""
     reasons = []
 
@@ -484,6 +630,36 @@ def evaluate_triggers(base, cur, book, now, th_spot, th_gex, th_oi, th_hl_oi):
         if bp * cp_ < 0 and max(abs(bp), abs(cp_)) >= 0.03:
             reasons.append(f"HLプレミアム符号反転 ({bp:+.3f}% → {cp_:+.3f}%)")
 
+    # 25Δスキューの急変 (下方ヘッジ需要の増減)
+    bsk, csk = base.get("skew_25d"), cur.get("skew_25d")
+    if bsk is not None and csk is not None and abs(csk - bsk) >= th_skew:
+        reasons.append(f"25Δスキュー {csk - bsk:+.1f}pt "
+                       f"({bsk:+.1f} → {csk:+.1f})")
+
+    # IV期間構造の反転 (符号が変わる反転だけ。ノイズ除けに片側2pt以上)
+    bts, cts = base.get("term_slope"), cur.get("term_slope")
+    if bts is not None and cts is not None:
+        if bts * cts < 0 and max(abs(bts), abs(cts)) >= 2.0:
+            side = "逆ザヤ化(短期警戒)" if cts < 0 else "順ザヤ回復"
+            reasons.append(f"IV期間構造の反転: {side} "
+                           f"({bts:+.1f} → {cts:+.1f}pt)")
+
+    # 米国ETFの単一ストライクOI急変 (日次。キャッシュが同一なら比較しない)
+    be, ce = base.get("etf"), cur.get("etf")
+    if be and ce and be.get("fetched") != ce.get("fetched"):
+        movers = []
+        keys = set(be.get("strikes", {})) | set(ce.get("strikes", {}))
+        for ks in keys:
+            o = be["strikes"].get(ks, {})
+            c = ce["strikes"].get(ks, {})
+            for side in ("call", "put"):
+                dv = c.get(side, 0.0) - o.get(side, 0.0)
+                if abs(dv) >= th_etf_oi:
+                    movers.append((abs(dv), float(ks), side.capitalize(), dv))
+        movers.sort(reverse=True)
+        for _, k, side, dv in movers[:2]:
+            reasons.append(f"{ce['symbol']} ${k:g} {side} OI {dv:+,.0f}枚")
+
     # ガンマフリップをスポットが跨いだ
     bflip, cflip = base.get("flip"), cur.get("flip")
     if bflip and cflip and base.get("spot") and cur.get("spot"):
@@ -511,7 +687,8 @@ def evaluate_triggers(base, cur, book, now, th_spot, th_gex, th_oi, th_hl_oi):
     return reasons
 
 
-def verbalize_diff(prev, m, g, funding, dvol, book, now, hl=None, depth=None):
+def verbalize_diff(prev, m, g, funding, dvol, book, now, hl=None, depth=None,
+                   vs=None, etf=None):
     out = []
     ts = datetime.fromisoformat(prev["ts"])
     hours = (now - ts).total_seconds() / 3600.0
@@ -541,6 +718,16 @@ def verbalize_diff(prev, m, g, funding, dvol, book, now, hl=None, depth=None):
     if depth and pd:
         out.append(f"・HL板(±2%): 買い {fmt_usd(pd['bid2'])} → {fmt_usd(depth['bid2'])}"
                    f" / 売り {fmt_usd(pd['ask2'])} → {fmt_usd(depth['ask2'])}")
+    if vs and vs.get("skew_25d") is not None \
+            and prev.get("skew_25d") is not None:
+        out.append(f"・25Δスキュー: {prev['skew_25d']:+.1f} → "
+                   f"{vs['skew_25d']:+.1f}pt")
+    pe = prev.get("etf")
+    if etf and pe and pe.get("fetched") != etf.get("fetched"):
+        dtc = etf["total_call"] - pe.get("total_call", 0.0)
+        dtp = etf["total_put"] - pe.get("total_put", 0.0)
+        out.append(f"・{etf['symbol']} 建玉(日次): Call {dtc:+,.0f}枚 / "
+                   f"Put {dtp:+,.0f}枚")
 
     # ストライク別OIの増減 上位
     movers = []
@@ -580,6 +767,99 @@ def verbalize_diff(prev, m, g, funding, dvol, book, now, hl=None, depth=None):
             hints.append("ファンディング低下=ロング解消/ショート優勢方向")
     if hints:
         out.append("【差分からの示唆】 " + "。".join(hints) + "。")
+    return "\n".join(out)
+
+
+def verbalize_vol(vs):
+    """ボラ構造 (期間構造・スキュー) の文章化"""
+    out = ["── ボラ構造 (Deribit mark IVからの自前計算) ──"]
+    tenors = sorted(vs["tenors"].items(), key=lambda kv: kv[1]["days"])
+    out.append("・ATM IV: " + " / ".join(
+        f"{lbl} {v['atm']:.1f}%" for lbl, v in tenors))
+
+    slope = vs.get("term_slope")
+    if slope is not None:
+        if slope >= 2:
+            note = "順ザヤ(コンタンゴ)。平時の形"
+        elif slope <= -2:
+            note = "逆ザヤ(バックワーデーション)。短期のイベント警戒が強い"
+        else:
+            note = "ほぼフラット"
+        out.append(f"・期間構造 (90d-7d): {slope:+.1f}pt — {note}")
+
+    skew = vs.get("skew_25d")
+    if skew is not None:
+        if skew >= 8:
+            note = "Putが大幅に割高。下方ヘッジ需要が強い"
+        elif skew >= 3:
+            note = "Put優位。下方警戒がやや強い"
+        elif skew <= -3:
+            note = "Call優位。上方向の投機・追いかけ買いが目立つ"
+        else:
+            note = "中立圏"
+        out.append(f"・25Δスキュー (30d, Put-Call): {skew:+.1f}pt — {note}")
+    return "\n".join(out)
+
+
+def verbalize_etf(etf, spot):
+    """米国現物ETF側の建玉地形。ストライクは原資産換算で表記する"""
+    sym, px = etf["symbol"], etf["price"]
+    ratio = spot / px if px else None
+    out = [f"── {sym} (米国現物ETF) オプション地形 ──"]
+    tc, tp = etf["total_call"], etf["total_put"]
+    pcr = tp / tc if tc else float("nan")
+    out.append(f"・建玉: Call {tc:,.0f}枚 / Put {tp:,.0f}枚 (PCR {pcr:.2f}) "
+               f"※1枚=100株, {sym} ${px:,.2f}")
+
+    if ratio:
+        walls = sorted(((float(k), v["call_w"], v["call"])
+                        for k, v in etf["strikes"].items()
+                        if float(k) > px and v["call"] > 0),
+                       key=lambda x: -x[1])[:2]
+        sups = sorted(((float(k), v["put_w"], v["put"])
+                       for k, v in etf["strikes"].items()
+                       if float(k) < px and v["put"] > 0),
+                      key=lambda x: -x[1])[:2]
+        if walls:
+            s = ", ".join(f"${k * ratio:,.0f} ({sym} ${k:g}, {o:,.0f}枚)"
+                          for k, _, o in sorted(walls))
+            out.append(f"・上の壁 (原資産換算): {s}")
+        if sups:
+            s = ", ".join(f"${k * ratio:,.0f} ({sym} ${k:g}, {o:,.0f}枚)"
+                          for k, _, o in sorted(sups, reverse=True))
+            out.append(f"・下の支持 (原資産換算): {s}")
+
+    # 月次満期 (第3金曜)。ETFオプションはここにOIが集中しやすい
+    exps = etf.get("expiries") or {}
+    total = etf["total_call"] + etf["total_put"]
+    if exps and total:
+        now = datetime.now(timezone.utc)
+        monthlies = []
+        for ds, v in exps.items():
+            try:
+                dt = datetime.strptime(ds, "%Y-%m-%d").replace(
+                    hour=21, tzinfo=timezone.utc)
+            except ValueError:
+                continue
+            if dt.weekday() == 4 and 15 <= dt.day <= 21 and dt >= now:
+                monthlies.append((dt, v))
+        if monthlies:
+            dt, v = min(monthlies)
+            share = (v["call"] + v["put"]) / total * 100
+            days = (dt - now).total_seconds() / 86400.0
+            line = (f"・次の月次満期 (第3金曜): {dt:%Y-%m-%d} ({days:.0f}日後) — "
+                    f"全OIの{share:.0f}%がここで満期")
+            if days <= 7:
+                line += ("。満期週につき集中ストライクへの吸着と"
+                         "ロール(建て直し)で需給が動きやすい")
+            out.append(line)
+
+    ts = etf.get("fetched", "")[:16].replace("T", " ")
+    out.append(f"・データ: CBOE 15分遅延 / OIは日次更新・週末は静止 "
+               f"(取得 {ts} UTC)")
+    out.append("【ETFからの示唆】 米国の機関・規制市場勢のポジション地図。"
+               "Deribitの壁と換算水準が重なる価格帯は攻防が固くなりやすい。"
+               "ETFは第3金曜の月次満期が主戦場で、満期通過でOIの景色が変わる点に注意。")
     return "\n".join(out)
 
 
@@ -791,6 +1071,10 @@ def main():
                     help="発火閾値: 単一ストライクのOI変化(枚) (既定 3000)")
     ap.add_argument("--th-hl-oi", type=float, default=10.0,
                     help="発火閾値: HL無期限の建玉変化率%% (既定 10.0)")
+    ap.add_argument("--th-skew", type=float, default=5.0,
+                    help="発火閾値: 25Δスキュー変化(volポイント) (既定 5.0)")
+    ap.add_argument("--th-etf-oi", type=float, default=50000.0,
+                    help="発火閾値: 米国ETFの単一ストライクOI変化(枚) (既定 50000)")
     ap.add_argument("--plot", default=None, metavar="PNG",
                     help="地形図をPNGに描く (matplotlib が必要)")
     ap.add_argument("--defer-baseline", action="store_true",
@@ -828,25 +1112,34 @@ def main():
 
     m = analyze(book, spot)
     g = compute_gex(instruments, spot) if instruments else None
+    vs = compute_vol_structure(instruments, spot) if instruments else None
+
+    d = snap_dir(args.snap_dir)
+    etf = fetch_etf_terrain(args.currency, d)
+    if etf is None:
+        print("米国ETFオプションの取得に失敗 (その分は省略)", file=sys.stderr)
 
     # ---- レポート本文の組み立て ----
     parts = [verbalize(m)]
     if g:
         parts.append(verbalize_gex(g, spot))
+    if vs:
+        parts.append(verbalize_vol(vs))
     extras = verbalize_extras(funding, dvol, hl, depth)
     if extras:
         parts.append("── 需給・ボラ補助指標 ──\n" + extras)
+    if etf:
+        parts.append(verbalize_etf(etf, spot))
 
-    d = snap_dir(args.snap_dir)
     prev = load_prev_snapshot(d, args.currency)
     if prev:
         parts.append(verbalize_diff(prev, m, g, funding, dvol, book, now, hl,
-                                    depth))
+                                    depth, vs, etf))
     else:
         print("(初回実行: 次回から前回比が出ます)", file=sys.stderr)
 
     snap = build_snapshot(args.currency, m, g, funding, dvol, book, now, hl,
-                          depth)
+                          depth, vs, etf)
 
     # ---- トリガー判定 ----
     fired, reasons = True, []
@@ -857,7 +1150,8 @@ def main():
         else:
             reasons = evaluate_triggers(base, snap, book, now,
                                         args.th_spot, args.th_gex, args.th_oi,
-                                        args.th_hl_oi)
+                                        args.th_hl_oi, args.th_skew,
+                                        args.th_etf_oi)
             fired = bool(reasons)
         if args.force and not fired:
             fired, reasons = True, ["定時実行(--force)"]

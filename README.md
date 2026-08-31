@@ -10,7 +10,8 @@ Deribit のオプション建玉から BTC / ETH の「地形」(壁・支持・
 ## 構成
 
 ```
-毎時  advisor.py --check     Deribit/Hyperliquid を観測してスナップショット保存 (APIのみ・無料)
+毎時  advisor.py --check     Deribit/Hyperliquid/CBOE を観測してスナップショット保存 (APIのみ・無料)
+                             (米国ETF IBIT/ETHA のOIは日次更新なので18時間キャッシュ)
         └─ 発火条件を満たすか？
              ├─ No  → 何もしない
              └─ Yes → claude -p で考察 → notify_discord.py で Discord へ
@@ -18,7 +19,7 @@ Deribit のオプション建玉から BTC / ETH の「地形」(壁・支持・
 
 | ファイル | 役割 |
 |---|---|
-| `advisor.py` | 建玉/GEX の計算、レポート生成、発火判定 (`--check`)、作図の呼び出し |
+| `advisor.py` | 建玉/GEX/ボラ構造(スキュー・期間構造)/米国ETF地形の計算、レポート生成、発火判定 (`--check`)、作図の呼び出し |
 | `plot_terrain.py` | 地形図PNGの描画と「図の読みどころ」の生成 (matplotlib) |
 | `notify_discord.py` | テキストを embed に整形して Webhook へ送信。画像・元データを添付 |
 | `watch_loop.sh` | 定期実行の本体。定時考察・クールダウン・日次上限を通貨別に管理 |
@@ -72,6 +73,9 @@ CURRENCIES="BTC" ./install_service.sh install   # 通貨を絞る場合
 | 単一ストライクのOI変化 | BTC ±3,000枚 / ETH ±20,000枚 | `TH_OI` |
 | HL無期限の建玉変化 | ±10% | `TH_HL_OI` |
 | HLプレミアム符号反転 | \|値\| ≥ 0.03% を伴うもの | — |
+| 25Δスキュー変化 | ±5pt | `TH_SKEW` |
+| IV期間構造(90d-7d)の符号反転 | \|値\| ≥ 2pt を伴うもの | — |
+| 米国ETFの単一ストライクOI変化 (日次) | IBIT ±50,000枚 / ETHA ±25,000枚 | `TH_ETF_OI` |
 | ガンマフリップをスポットが跨いだ | — | — |
 
 発火してもシェル側で2段階に絞る:

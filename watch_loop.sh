@@ -10,7 +10,7 @@
 #   SCHEDULE="8 20"          定時考察の時刻(ローカル時, 空で無効)
 #   COOLDOWN_MIN=120         トリガー発火の最短間隔(分)。定時考察は対象外
 #   MAX_PER_DAY=8            1日あたりの考察回数の上限
-#   TH_SPOT=2.0 TH_GEX=15 TH_OI=3000 TH_HL_OI=10   発火閾値
+#   TH_SPOT=2.0 TH_GEX=15 TH_OI=3000 TH_HL_OI=10 TH_SKEW=5 TH_ETF_OI=50000  発火閾値
 #   MODE=section             Discord embed の整形モード
 #   NOTIFY=1                 0 にすると Discord へ送らない(ログのみ)
 #
@@ -34,6 +34,9 @@ TH_GEX="${TH_GEX:-15}"
 # 単一ストライクOI(枚)は通貨で桁が違う (ETHは1枚=1ETHで枚数が一桁多い)
 TH_OI="${TH_OI:-$([ "$CURRENCY" = "ETH" ] && echo 20000 || echo 3000)}"
 TH_HL_OI="${TH_HL_OI:-10}"
+TH_SKEW="${TH_SKEW:-5}"
+# 米国ETF(IBIT/ETHA)の単一ストライクOI(枚)。1枚=100株で通貨により規模が違う
+TH_ETF_OI="${TH_ETF_OI:-$([ "$CURRENCY" = "ETH" ] && echo 25000 || echo 50000)}"
 MODE="${MODE:-section}"
 NOTIFY="${NOTIFY:-1}"
 
@@ -54,7 +57,12 @@ if [ "$CURRENCY" = "BTC" ]; then
     done
 fi
 
-PROMPT="この${CURRENCY}のデータを考察して。今日の重要イベント(FOMC・雇用統計・要人発言など)をWeb検索で確認し、地形とイベントリスクを統合した見解を出して"
+PROMPT="この${CURRENCY}のオプション地形データを考察して。まずWeb検索で次の4点を確認すること:
+1) 米国経済指標の直近結果と今後1週間の予定 (CPI・雇用統計・FOMC・PCE・GDPなど)
+2) ホワイトハウスの動きと大統領・閣僚の直近発言 (関税・財政・金融規制・暗号資産関連)
+3) 世界で今話題になっている出来事のうち市場に波及しうるもの (地政学・大手企業・規制)
+4) 暗号資産固有のニュース (ETF資金流出入・取引所・規制当局)
+そのうえで、価格に効きそうな材料だけを選び、それが地形のどの水準 (壁・支持・ガンマフリップ・満期集中) を試しに来るかという形で統合した見解を出して。関係の薄い一般論は書かない"
 
 log() { printf '[%s] [%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$CURRENCY" "$*" \
         | tee -a "$LOGFILE" >&2; }
@@ -90,7 +98,7 @@ run_once() {
     "$PY" advisor.py --currency "$CURRENCY" --check --defer-baseline $force \
         --out "$rpt" --plot "$png" \
         --th-spot "$TH_SPOT" --th-gex "$TH_GEX" --th-oi "$TH_OI" \
-        --th-hl-oi "$TH_HL_OI" \
+        --th-hl-oi "$TH_HL_OI" --th-skew "$TH_SKEW" --th-etf-oi "$TH_ETF_OI" \
         >/dev/null 2>>"$LOGFILE"
     local rc=$?
 
