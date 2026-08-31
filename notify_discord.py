@@ -28,6 +28,9 @@ MAX_DESC = 4096
 MAX_TITLE = 256
 MAX_AUTHOR = 256
 MAX_TOTAL_CHARS = 6000
+# payload_json が 10KiB を超えると Discord は HTTP 500 を返す (実測: 10,240 bytes
+# ちょうどが境界)。日本語は 1文字=3バイトなので 6000文字制限より先にここへ当たる。
+MAX_PAYLOAD_BYTES = 9000
 
 # 色 (キーワードでトーンを付ける)
 C_BULL = 0x2ECC71   # 上/強気
@@ -177,17 +180,21 @@ def build_embeds_section(units, ts):
 
 
 def paginate(embeds):
-    """Discord の 10個/6000文字 制限でメッセージに分割"""
-    msgs, cur, cur_len = [], [], 0
+    """Discord の 10個/6000文字/payload 10KiB 制限でメッセージに分割"""
+    msgs, cur, cur_len, cur_bytes = [], [], 0, 0
     for e in embeds:
         n = len(e.get("description", "")) + len(e.get("title", "")) \
             + len(e.get("author", {}).get("name", "")) \
             + len(e.get("footer", {}).get("text", ""))
-        if cur and (len(cur) >= MAX_EMBEDS_PER_MSG or cur_len + n > MAX_TOTAL_CHARS):
+        b = len(json.dumps(e, ensure_ascii=False).encode("utf-8"))
+        if cur and (len(cur) >= MAX_EMBEDS_PER_MSG
+                    or cur_len + n > MAX_TOTAL_CHARS
+                    or cur_bytes + b > MAX_PAYLOAD_BYTES):
             msgs.append(cur)
-            cur, cur_len = [], 0
+            cur, cur_len, cur_bytes = [], 0, 0
         cur.append(e)
         cur_len += n
+        cur_bytes += b
     if cur:
         msgs.append(cur)
     return msgs
@@ -283,6 +290,12 @@ def post(webhook, payload, files=None, retries=3):
                     wait = 2.0
                 print(f"rate limited: {wait}s 待機", file=sys.stderr)
                 time.sleep(min(wait + 0.2, 30))
+                continue
+            if 500 <= e.code < 600 and attempt < retries - 1:
+                wait = 2 * (attempt + 1)
+                print(f"HTTP {e.code} — {wait}s 後に再試行 "
+                      f"({attempt + 1}/{retries}): {body[:200]}", file=sys.stderr)
+                time.sleep(wait)
                 continue
             raise RuntimeError(f"HTTP {e.code}: {body[:500]}") from None
         except urllib.error.URLError as e:
