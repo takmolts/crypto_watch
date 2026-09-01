@@ -49,6 +49,7 @@ LOCK="$STATE_DIR/watch.$CURRENCY.lock"
 LAST_FIRE="$STATE_DIR/last_fire.$CURRENCY"    # epoch秒
 DAY_COUNT="$STATE_DIR/day_count.$CURRENCY"    # "YYYY-MM-DD count"
 SCHED_MARK="$STATE_DIR/last_sched.$CURRENCY"  # "YYYY-MM-DD 8 20" (今日済ませた定時)
+ALERT_MARK="$STATE_DIR/last_alert.$CURRENCY"  # 継続中の障害の種別 (復旧するまで残す)
 # 通貨サフィックスが無かった頃の状態ファイルを BTC 用として引き継ぐ
 if [ "$CURRENCY" = "BTC" ]; then
     for f in last_fire day_count last_sched; do
@@ -79,6 +80,41 @@ PROMPT="この${CURRENCY}のオプション地形データを考察して。ま�
 
 log() { printf '[%s] [%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$CURRENCY" "$*" \
         | tee -a "$LOGFILE" >&2; }
+
+# ---------------------------------------------------------------- 死活通知
+#
+# 考察が落ちても今までは無言で、届かないことでしか気づけなかった。
+# ただし定時は復旧するまで毎時リトライするので、そのたびに鳴らすと
+# 「届いたものは全部読む価値がある」が壊れる。障害の種別が変わるか
+# 復旧するまでの1通だけに絞る。
+alert() {
+    local kind="$1" body="$2"
+    [ "$NOTIFY" = "1" ] || return 0
+    [ "$(cat "$ALERT_MARK" 2>/dev/null)" = "$kind" ] && return 0
+    if printf '%s\n' "$body" | "$PY" notify_discord.py --mode sentence \
+            --currency "$CURRENCY" --username "$CURRENCY Watch (障害)" \
+            --content "⚠️ **${CURRENCY} の定期通知が止まっています** (\`$kind\`)" \
+            >/dev/null 2>>"$LOGFILE"; then
+        echo "$kind" > "$ALERT_MARK"
+    else
+        # Discord 自体が落ちている場合はここも失敗する。mark を書かないので次回また試す
+        log "死活通知の送信にも失敗 ($kind)"
+    fi
+}
+
+# 引数を与えると、継続中の障害がその種別だったときだけ復帰扱いにする。
+# 「観測は直ったが考察はまだ落ちている」を取り違えないため
+alert_clear() {
+    local cur k hit=""
+    cur=$(cat "$ALERT_MARK" 2>/dev/null) || return 0
+    [ -n "$cur" ] || return 0
+    if [ $# -gt 0 ]; then
+        for k in "$@"; do [ "$k" = "$cur" ] && hit=1; done
+        [ -n "$hit" ] || return 0
+    fi
+    rm -f "$ALERT_MARK"
+    log "障害から復帰 ($cur)"
+}
 
 # ---------------------------------------------------------------- 1回分
 
@@ -117,8 +153,10 @@ run_once() {
 
     if [ $rc -ne 0 ] && [ $rc -ne 1 ]; then
         log "advisor.py がエラー終了 (rc=$rc) — 今回はスキップ"
+        alert advisor "観測に失敗しました (advisor.py rc=$rc)。詳細は $LOGFILE を見てください。"
         return 0
     fi
+    alert_clear advisor
     if [ $rc -eq 1 ]; then
         log "観測のみ: 有意な変化なし (snapshot 保存済み)"
         rm -f "$rpt" "$png"
@@ -154,13 +192,19 @@ run_once() {
     local analysis="$LOG_DIR/analysis-$stamp.md" img
     if ! claude -p "$PROMPT" --allowedTools "WebSearch" < "$rpt" > "$analysis" 2>>"$LOGFILE"; then
         log "claude -p が失敗 — 通知をスキップ (レポートは $rpt に残っています)"
+        alert claude "考察の生成に失敗しました (claude -p)。観測とレポート自体は取れています。
+$(tail -c 400 "$analysis" 2>/dev/null)
+レポート: $rpt"
         return 0
     fi
     if [ ! -s "$analysis" ]; then
         log "claude の出力が空 — 通知をスキップ"
+        alert claude-empty "claude の出力が空でした。レポート: $rpt"
         return 0
     fi
+    alert_clear claude claude-empty
 
+    local sent=1   # NOTIFY=0 は「送らないのが正常」なので済み扱いにする
     if [ "$NOTIFY" = "1" ]; then
         img=()
         if [ -s "$png" ]; then
@@ -172,8 +216,14 @@ run_once() {
                 --file "$analysis" \
                 "${img[@]}" --attach-source --attach "$rpt" 2>>"$LOGFILE"; then
             log "Discord へ送信: $analysis"
+            alert_clear
         else
+            sent=0
             log "Discord 送信に失敗 (考察は $analysis に保存済み)"
+            # 図とレポートを抱えた本体が弾かれても、短いテキストなら通ることが多い
+            alert discord "考察は生成できましたが Discord へ送れませんでした。
+本文: $analysis
+次の定時実行で出し直します。"
         fi
     else
         log "NOTIFY=0 のため送信せず: $analysis"
@@ -187,7 +237,12 @@ run_once() {
     read -r d c < <(cat "$DAY_COUNT" 2>/dev/null || echo "$today 0")
     [ "$d" != "$today" ] && c=0
     echo "$today $((c + 1))" > "$DAY_COUNT"
-    [ -n "$reason_sched" ] && echo "$reason_sched" > "$SCHED_MARK"
+    # 定時は「送れたら済み」。送れていなければ mark を書かず次回に持ち越す。
+    # 古い考察を再送するのではなく、その時点の地形を読み直して出し直す
+    # (地形もイベントも数時間で変わるので、鮮度のほうが価値が高い)
+    if [ -n "$reason_sched" ] && [ "$sent" = "1" ]; then
+        echo "$reason_sched" > "$SCHED_MARK"
+    fi
 }
 
 # ---------------------------------------------------------------- 排他
