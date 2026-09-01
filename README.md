@@ -24,8 +24,9 @@ Deribit のオプション建玉から BTC / ETH の「地形」(壁・支持・
 | `notify_discord.py` | テキストを embed に整形して Webhook へ送信。画像・元データを添付 |
 | `watch_loop.sh` | 定期実行の本体。定時考察・クールダウン・日次上限を通貨別に管理 |
 | `run_watch.sh` | 手動で1回だけ通す (自動運転の状態を触らない) |
-| `install_service.sh` | systemd --user の timer として登録/解除 (`btcwatch@BTC` / `btcwatch@ETH`) |
-| `requirements.txt` | 作図に必要なものだけ (matplotlib) |
+| `crypto_bot.py` | Discord bot。`/crypto_status` で稼働状況、`/crypto_run` でその場の考察 (任意) |
+| `install_service.sh` | systemd --user への登録/解除 (`btcwatch@BTC` / `btcwatch@ETH` / `cryptobot`) |
+| `requirements.txt` | 作図 (matplotlib) と bot (discord.py)。どちらも無くても定期送信は動く |
 
 ## セットアップ
 
@@ -43,8 +44,8 @@ CURRENCIES="BTC" ./install_service.sh install   # 通貨を絞る場合
 ```
 
 `advisor.py` / `notify_discord.py` / シェル側は**標準ライブラリのみ**で動く。
-`requirements.txt` の matplotlib は地形図を描く場合にだけ必要で、無ければ作図だけ
-スキップして通知は続行する。
+`requirements.txt` は「あると増える機能」の分で、matplotlib は地形図を描く場合
+(無ければ作図だけスキップして通知は続行)、discord.py は bot を動かす場合にだけ要る。
 
 シェルスクリプトは `.venv/bin/python3` があればそれを使い、無ければ `python3` に
 フォールバックする。
@@ -59,6 +60,61 @@ CURRENCIES="BTC" ./install_service.sh install   # 通貨を絞る場合
   書き換える (ホーム配下なら `%h/...` として記録する)
 - 前のマシンの観測履歴を引き継ぐなら `~/.btc_oi_advisor/` をコピーする。
   `BTC_baseline.json` が無い場合、初回実行は必ず考察が走る
+
+## Discord bot (任意)
+
+定期送信とは独立した常駐プロセス。定期送信そのものには手を触れない。
+
+```
+/crypto_status            稼働状況・次回時刻・蓄積データを見る
+/crypto_run               いまの地形を評価して考察を投稿する (省略で BTC/ETH 両方)
+/crypto_run currency:BTC  通貨を指定する
+```
+
+`/crypto_status` が出すもの (通貨ごと):
+
+- 観測タイマーの次回/前回、いま実行中か
+- 定時考察の今日の進み具合 (✅済み / ⚠️未送信 / 🕐待ち) と、次にいつ出るか。
+  未送信があれば「次の観測で出し直し」と catch-up の予定を出す
+- 最終考察の時刻と今日の回数、**継続中の障害** (`last_alert` があれば)
+- スナップショットの件数・期間・サイズ、いま何と比べて発火判定しているか (基準の時刻と spot)
+- `watch.log` の直近の出来事
+
+`/crypto_run` は `run_watch.sh` を呼ぶだけなので、**自動運転の基準を動かさない**。
+`advisor.py` に `--check` を渡さないため baseline は書かれず、日次カウントや定時の
+済み印にも触らない。手動で回したせいで次の定時トリガーが鈍る、ということが起きない。
+
+考察の投稿先は通貨別チャンネル (`DISCORD_WEBHOOK_<通貨>`)。定期送信と同じ
+`notify_discord.py` を通すので、地形図・色付き embed・添付が定期分と揃う。
+コマンドを叩いたチャンネルには開始と完了の報告だけ返す。
+
+数分かかるので応答は先に返し、結果は完了時にチャンネルへ流す (interaction の
+15分制限に縛られないため)。同じ通貨の二重実行は弾く。
+
+### bot のセットアップ
+
+```bash
+.venv/bin/pip install -r requirements.txt   # discord.py
+```
+
+`.env` に足す:
+
+```
+DISCORD_BOT_TOKEN=...    # Developer Portal の Bot > Token (webhook とは別物)
+DISCORD_GUILD_ID=...     # 入れると slash コマンドが即時反映される (空だと最大1時間)
+```
+
+bot の招待には `bot` と `applications.commands` の両スコープが要る。権限は
+「メッセージを送信」があれば足りる (考察は webhook 経由なので bot 自身は投稿しない)。
+
+```bash
+./install_service.sh install     # 前提が揃っていれば cryptobot.service も登録される
+BOT=0 ./install_service.sh install   # bot を入れない
+journalctl --user -u cryptobot -f
+```
+
+トークンが空・discord.py 未導入・`.venv` 無しのいずれでも、理由を出して bot だけ
+飛ばす。定期送信の登録はそれと関係なく成立する。
 
 ## 発火条件
 
@@ -93,7 +149,7 @@ CURRENCIES="BTC" ./install_service.sh install   # 通貨を絞る場合
 ./watch_loop.sh force            # 今すぐ考察させる (BTC)
 CURRENCY=ETH ./watch_loop.sh force
 ./run_watch.sh                   # 状態を触らずに1回だけ (CURRENCY=ETH も可)
-./install_service.sh status      # 次回実行時刻
+./install_service.sh status      # 次回実行時刻 (bot の状態も出る)
 journalctl --user -u 'btcwatch@*' -f
 ```
 

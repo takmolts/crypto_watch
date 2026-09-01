@@ -1,3 +1,9 @@
 # advisor.py / notify_discord.py / watch_loop.sh は標準ライブラリのみで動く。
-# ここに書いてあるのは地形図(plot_terrain.py)を描く場合にだけ必要なもの。
+# ここに書いてあるのは、無くても定期送信は動く「あると増える機能」の分。
+
+# 地形図 (plot_terrain.py) を描く場合
 matplotlib>=3.8,<4
+
+# Discord bot (crypto_bot.py) を動かす場合。
+# gateway 接続が要るので標準ライブラリでは代替できない
+discord.py>=2.3,<3

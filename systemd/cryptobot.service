@@ -1,0 +1,18 @@
+[Unit]
+Description=crypto_watch Discord bot (/crypto_status /crypto_run)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# %h = ホームディレクトリ。install_service.sh が実際の配置先に書き換える
+WorkingDirectory=%h/Programs/btcwatch
+# /crypto_run が run_watch.sh 経由で claude CLI を呼ぶので PATH を通す
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+# discord.py が要るので venv の python を使う (他のスクリプトと違いフォールバック不可)
+ExecStart=%h/Programs/btcwatch/.venv/bin/python3 %h/Programs/btcwatch/crypto_bot.py
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=default.target
