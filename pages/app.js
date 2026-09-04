@@ -485,7 +485,7 @@ function parseScenarios(mdText) {
     const line = raw.trim();
     if (!line) continue;
     const bold = /^\*\*(.+?)\*\*[:：]?$/.exec(line);
-    if (bold && !/^[-*・]/.test(line)) { g = { title: bold[1], items: [] }; groups.push(g); continue; }
+    if (bold && !/^[-*・]\s/.test(line)) { g = { title: bold[1], items: [] }; groups.push(g); continue; }   // 先頭の ** を箇条書きと取り違えない
     const b = /^[-*・]\s+(.*)$/.exec(raw.replace(/^\s+/, ''));
     if (b) {
       if (!g) { g = { title: '', items: [] }; groups.push(g); }
@@ -534,7 +534,12 @@ function renderAnalysis() {
       if (groups.length) {
         const h = document.createElement('h3'); h.textContent = c.title; h.style.marginTop = '16px'; scBox.appendChild(h);
         for (const g of groups) {
-          if (g.title) { const t = document.createElement('div'); t.className = 'scenario-group'; t.textContent = g.title; scBox.appendChild(t); }
+          if (g.title) {
+            const t = document.createElement('div'); t.className = 'scenario-group';
+            const sum = g.items.filter(i => isNum(i.prob) && !/テール/.test(i.title)).reduce((a, i) => a + i.prob, 0);
+            t.textContent = g.title + (sum ? ` (確度はこの期間内で合計 ${sum}%${sum !== 100 ? '、テール等は重複' : ''})` : '');
+            scBox.appendChild(t);
+          }
           const grid = document.createElement('div'); grid.className = 'scenarios';
           for (const it of g.items) {
             const d = document.createElement('div');
