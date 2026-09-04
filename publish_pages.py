@@ -284,11 +284,30 @@ def stamp_ts(stamp):
         return datetime.now(timezone.utc)
 
 
+def _short_hash(path):
+    import hashlib
+    with open(path, "rb") as f:
+        return hashlib.sha1(f.read()).hexdigest()[:10]
+
+
 def copy_static(site):
+    """pages/ をコピーし、index.html の app.js / style.css 参照に内容ハッシュを付ける。
+    GitHub Pages は max-age=600 で配るので、版を付けないと更新後もブラウザが古い JS を使い続ける"""
     for n in os.listdir(STATIC_DIR):
         src = os.path.join(STATIC_DIR, n)
         if os.path.isfile(src):
             shutil.copy2(src, os.path.join(site, n))
+    idx = os.path.join(site, "index.html")
+    if os.path.exists(idx):
+        with open(idx, encoding="utf-8") as f:
+            html = f.read()
+        for name in ("app.js", "style.css"):
+            path = os.path.join(site, name)
+            if os.path.exists(path):
+                html = re.sub(rf'(["\'])({re.escape(name)})(\?v=[0-9a-f]+)?(["\'])',
+                              rf'\g<1>\g<2>?v={_short_hash(path)}\g<4>', html)
+        with open(idx, "w", encoding="utf-8") as f:
+            f.write(html)
     open(os.path.join(site, ".nojekyll"), "w").close()
 
 
