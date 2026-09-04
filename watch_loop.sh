@@ -11,6 +11,7 @@
 #   COOLDOWN_MIN=120         トリガー発火の最短間隔(分)。定時考察は対象外
 #   MAX_PER_DAY=8            1日あたりの考察回数の上限
 #   TH_SPOT=2.0 TH_GEX=15 TH_OI=3000 TH_HL_OI=10 TH_SKEW=5 TH_ETF_OI=50000  発火閾値
+#   TH_ETF_FLOW=400 TH_CB_PREM=0.15 TH_BASIS=3   ETF資金流出入(百万USD)・Coinbaseプレミアム(pt)・先物ベーシス(pt)
 #   MODE=section             Discord embed の整形モード
 #   NOTIFY=1                 0 にすると Discord へ送らない(ログのみ)
 #
@@ -37,6 +38,10 @@ TH_HL_OI="${TH_HL_OI:-10}"
 TH_SKEW="${TH_SKEW:-5}"
 # 米国ETF(IBIT/ETHA)の単一ストライクOI(枚)。1枚=100株で通貨により規模が違う
 TH_ETF_OI="${TH_ETF_OI:-$([ "$CURRENCY" = "ETH" ] && echo 25000 || echo 50000)}"
+# 米国ETF(IBIT/ETHA)の1日の資金流出入(百万USD)。純資産の規模が違うので通貨別
+TH_ETF_FLOW="${TH_ETF_FLOW:-$([ "$CURRENCY" = "ETH" ] && echo 150 || echo 400)}"
+TH_CB_PREM="${TH_CB_PREM:-0.15}"   # Coinbaseプレミアムの変化(pt)
+TH_BASIS="${TH_BASIS:-3}"          # 先物ベーシス(年率)の変化(pt)
 MODE="${MODE:-section}"
 NOTIFY="${NOTIFY:-1}"
 
@@ -62,14 +67,14 @@ PROMPT="この${CURRENCY}のオプション地形データを考察して。ま�
 1) 米国経済指標の直近結果と今後1週間の予定 (CPI・雇用統計・FOMC・PCE・GDPなど)
 2) ホワイトハウスの動きと大統領・閣僚の直近発言 (関税・財政・金融規制・暗号資産関連)
 3) 世界で今話題になっている出来事のうち市場に波及しうるもの (地政学・大手企業・規制)
-4) 暗号資産固有のニュース (ETF資金流出入・取引所・規制当局)
+4) 暗号資産固有のニュース (現物ETFの資金流出入は全発行体の合計と年初来での位置づけまで・取引所・規制当局)
 
 次の章立てで書くこと:
 ## 1. 地形サマリ — いまのレンジ・重要水準・ガンマ状態を数行で
 ## 2. 世界の動き — 効く材料の背景と因果。マクロのレジームが変わったならそれを最初に
 ## 3. イベントカレンダー — 今日と今週の予定を、なぜ・どちらに効くかとセットで
 ## 4. 地形との統合 — 各材料がどの水準 (壁・支持・フリップ・満期集中・ETFの壁) を試しに来るか
-## 5. 需給とボラの温度感 — ファンディング・板・スキュー・DVOL・ETFフローから違和感を拾う
+## 5. 需給とボラの温度感 — ファンディング・板・スキュー・DVOL・ETFフロー(IBIT/ETHAの口数変化)・Coinbaseプレミアム・先物ベーシスから違和感を拾う。ETF流入はベーシスの高低と合わせて、アービ資金か実需かを切り分ける
 ## 6. シナリオ — 今日/今週/それ以降の時系列で、確度と価格帯つき。強気弱気の両方
 ## 7. 見方を変えるトリガー — この数値がこうなったら前提が崩れる、という具体値で
 
@@ -148,6 +153,7 @@ run_once() {
         --out "$rpt" --plot "$png" \
         --th-spot "$TH_SPOT" --th-gex "$TH_GEX" --th-oi "$TH_OI" \
         --th-hl-oi "$TH_HL_OI" --th-skew "$TH_SKEW" --th-etf-oi "$TH_ETF_OI" \
+        --th-etf-flow "$TH_ETF_FLOW" --th-cb-prem "$TH_CB_PREM" --th-basis "$TH_BASIS" \
         >/dev/null 2>>"$LOGFILE"
     local rc=$?
 

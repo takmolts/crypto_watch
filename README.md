@@ -10,8 +10,9 @@ Deribit のオプション建玉から BTC / ETH の「地形」(壁・支持・
 ## 構成
 
 ```
-毎時  advisor.py --check     Deribit/Hyperliquid/CBOE を観測してスナップショット保存 (APIのみ・無料)
-                             (米国ETF IBIT/ETHA のOIは日次更新なので18時間キャッシュ)
+毎時  advisor.py --check     Deribit/Hyperliquid/CBOE/iShares/Coinbase/Binance を観測してスナップショット保存 (APIのみ・無料)
+                             (米国ETF IBIT/ETHA のOIは日次更新なので18時間キャッシュ、
+                              iShares の口数/NAV は3時間キャッシュ + 日次履歴を蓄積)
         └─ 発火条件を満たすか？
              ├─ No  → 何もしない
              └─ Yes → claude -p で考察 → notify_discord.py で Discord へ
@@ -19,7 +20,7 @@ Deribit のオプション建玉から BTC / ETH の「地形」(壁・支持・
 
 | ファイル | 役割 |
 |---|---|
-| `advisor.py` | 建玉/GEX/ボラ構造(スキュー・期間構造)/米国ETF地形の計算、レポート生成、発火判定 (`--check`)、作図の呼び出し |
+| `advisor.py` | 建玉/GEX/ボラ構造(スキュー・期間構造)/米国ETF地形/米国需要(ETFフロー・Coinbaseプレミアム・先物ベーシス)の計算、レポート生成、発火判定 (`--check`)、作図の呼び出し |
 | `plot_terrain.py` | 地形図PNGの描画と「図の読みどころ」の生成 (matplotlib) |
 | `notify_discord.py` | テキストを embed に整形して Webhook へ送信。画像・元データを添付 |
 | `watch_loop.sh` | 定期実行の本体。定時考察・クールダウン・日次上限を通貨別に管理 |
@@ -59,7 +60,23 @@ CURRENCIES="BTC" ./install_service.sh install   # 通貨を絞る場合
 - 配置先は任意。`install_service.sh` が systemd ユニットのパスを実際の場所に
   書き換える (ホーム配下なら `%h/...` として記録する)
 - 前のマシンの観測履歴を引き継ぐなら `~/.btc_oi_advisor/` をコピーする。
-  `BTC_baseline.json` が無い場合、初回実行は必ず考察が走る
+  `BTC_baseline.json` が無い場合、初回実行は必ず考察が走る。
+  `BTC_etf_fund.json` / `ETH_etf_fund.json` は IBIT/ETHA の口数・NAVの日次履歴で、
+  ETF資金流出入はこれの差分から出す (失うと流出入とσ評価がしばらく出なくなる)
+
+## 米国の現物需要と先物ベーシス
+
+「ETFに年初来2番目の流入があった日に、レポートがそれに触れていなかった」を防ぐための
+3点セット。Web検索任せにせず、数値としてレポートに載せて発火条件にも入れている。
+
+| 観点 | 出所 | 更新 | 読み方 |
+|---|---|---|---|
+| ETF資金流出入 | iShares 公式ページの IBIT/ETHA 発行済口数 × NAV | 日次 (米国引け後) | 創設/償還の確定値。IBIT/ETHA 単体で、全発行体の合計ではない (合計と年初来の位置づけは考察側の Web検索に任せる) |
+| Coinbase プレミアム | Coinbase (USD) vs Binance (USDT) 現物 | 毎時 | 米国の現物買い (AP の創設買い) が乗ると当日中にプラスへ振れる。ETFフローの先行指標 |
+| 先物ベーシス | Deribit 期日先物 vs 現物指数 (年率換算) | 毎時 | 「ETFロング/先物ショート」のキャリー妙味。高いほど流入にアービ資金が混じり、低ければ実需寄り |
+
+口数の履歴は初回観測から蓄積するので、流出入は2回目の日次更新から、σ評価は10営業日分
+溜まってから出る。
 
 ## Discord bot (任意)
 
@@ -132,6 +149,9 @@ journalctl --user -u cryptobot -f
 | 25Δスキュー変化 | ±5pt | `TH_SKEW` |
 | IV期間構造(90d-7d)の符号反転 | \|値\| ≥ 2pt を伴うもの | — |
 | 米国ETFの単一ストライクOI変化 (日次) | IBIT ±50,000枚 / ETHA ±25,000枚 | `TH_ETF_OI` |
+| 米国ETFの1日の資金流出入 (日次、口数×NAV) | IBIT ±$400M / ETHA ±$150M | `TH_ETF_FLOW` (百万USD) |
+| Coinbaseプレミアムの変化 | ±0.15pt | `TH_CB_PREM` |
+| 先物ベーシス(年率)の変化 / 符号反転 | ±3pt / \|値\| ≥ 1pt を伴うもの | `TH_BASIS` |
 | ガンマフリップをスポットが跨いだ | — | — |
 
 発火してもシェル側で2段階に絞る:
