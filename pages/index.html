@@ -19,69 +19,101 @@
   </div>
 </header>
 
-<main class="wrap" id="main">
-  <section class="controls">
-    <label class="runsel">
-      <span>考察</span>
-      <select id="run-select" aria-label="考察を選ぶ"></select>
-    </label>
-    <div class="buttons">
+<div class="wrap layout">
+  <aside class="side">
+    <div class="side-box">
+      <h3>考察</h3>
+      <ul id="run-list" class="run-list"></ul>
+    </div>
+    <div class="side-box">
+      <h3>目次</h3>
+      <nav id="toc" class="toc">
+        <a href="#sec-overview">概要</a>
+        <a href="#sec-calendar">イベント年表</a>
+        <a href="#sec-analysis">分析</a>
+        <a href="#sec-series">推移</a>
+        <a href="#sec-data">解析データ</a>
+        <a href="#sec-sources">出典</a>
+      </nav>
+    </div>
+    <div class="side-box actions">
       <button id="btn-live" type="button" title="Deribit / Coinbase / Binance の公開APIから現在値を取り、概要に重ねる">⟳ 最新データを取得</button>
       <a id="btn-claude" class="btn" target="_blank" rel="noopener" href="#">Claude に相談</a>
       <a id="btn-chatgpt" class="btn" target="_blank" rel="noopener" href="#">ChatGPT に相談</a>
       <button id="btn-copy" type="button" title="考察と生データをクリップボードへ">レポートをコピー</button>
+      <p class="hint">フル再考察は Discord の <code>/crypto_run</code> から。</p>
+      <p class="hint" id="tz-note"></p>
     </div>
-    <p class="hint">フルの再考察はこのページからは起動できません。Discord の <code>/crypto_run</code> を使ってください。</p>
-  </section>
+  </aside>
 
-  <p id="status" class="status" hidden></p>
+  <main id="main">
+    <p id="status" class="status" hidden></p>
 
-  <article id="report" hidden>
-    <header class="run-head">
-      <h1 id="run-title"></h1>
-      <div id="run-meta" class="meta"></div>
-      <ul id="reasons" class="reasons"></ul>
-    </header>
+    <article id="report" hidden>
+      <header class="run-head">
+        <div class="kind-row"><span id="run-kind" class="badge"></span><span id="run-meta" class="meta"></span></div>
+        <h1 id="run-title"></h1>
+        <ul id="reasons" class="reasons"></ul>
+      </header>
 
-    <section class="section" id="sec-overview">
-      <h2>概要</h2>
-      <div id="tiles" class="tiles"></div>
-      <p id="live-note" class="live-note" hidden></p>
-      <div id="overview" class="md"></div>
-      <figure id="figure" hidden>
-        <img id="terrain" alt="オプション地形図">
-        <figcaption id="caption"></figcaption>
-      </figure>
-    </section>
+      <section class="section" id="sec-overview">
+        <h2>概要</h2>
+        <div id="tiles" class="tiles"></div>
+        <p id="live-note" class="live-note" hidden></p>
+        <div id="overview" class="md keypoints"></div>
+        <div class="two-col">
+          <div class="ladder-box">
+            <h3>価格ラダー <small>壁・支持・磁石・フリップ (生レポートから)</small></h3>
+            <div id="ladder"></div>
+          </div>
+          <figure id="figure" hidden>
+            <img id="terrain" alt="オプション地形図" loading="lazy">
+            <figcaption id="caption"></figcaption>
+          </figure>
+        </div>
+      </section>
 
-    <section class="section" id="sec-analysis">
-      <h2>分析</h2>
-      <div id="chapters"></div>
-    </section>
+      <section class="section" id="sec-calendar">
+        <h2>イベント年表 <small id="cal-sub"></small></h2>
+        <div id="cal-legend" class="legend"></div>
+        <div id="timeline" class="timeline"></div>
+        <ol id="event-list" class="event-list"></ol>
+        <details id="cal-raw"><summary>3章の原文</summary><div class="body md" id="cal-raw-body"></div></details>
+      </section>
 
-    <section class="section" id="sec-series">
-      <h2>推移</h2>
-      <p class="note" id="series-note"></p>
-      <div id="charts" class="charts"></div>
-    </section>
+      <section class="section" id="sec-analysis">
+        <h2>分析</h2>
+        <div id="verdict" class="verdict" hidden></div>
+        <div id="chapters"></div>
+        <div id="scenarios"></div>
+        <div id="triggers"></div>
+        <div id="notes" class="notes md" hidden></div>
+      </section>
 
-    <section class="section" id="sec-data">
-      <h2>解析データ</h2>
-      <p class="note">advisor.py が Deribit / Hyperliquid / CBOE / iShares / Coinbase から読んだ生の観測値。考察はこれを入力にしている。</p>
-      <div id="raw"></div>
-    </section>
+      <section class="section" id="sec-series">
+        <h2>推移 <small id="series-tz"></small></h2>
+        <p class="note" id="series-note"></p>
+        <div id="charts" class="charts"></div>
+      </section>
 
-    <section class="section" id="sec-sources">
-      <h2>出典・参照リンク</h2>
-      <ul id="sources" class="sources"></ul>
-    </section>
-  </article>
+      <section class="section" id="sec-data">
+        <h2>解析データ</h2>
+        <p class="note">advisor.py が Deribit / Hyperliquid / CBOE / iShares / Coinbase から読んだ生の観測値。考察はこれを入力にしている。</p>
+        <div id="raw"></div>
+      </section>
 
-  <footer class="foot">
-    <p>OIの偏りは「壁・磁石」の地図であって方向予測ではない。最終判断は自分で。</p>
-    <p id="foot-updated"></p>
-  </footer>
-</main>
+      <section class="section" id="sec-sources">
+        <h2>出典・参照リンク</h2>
+        <ul id="sources" class="sources"></ul>
+      </section>
+    </article>
+
+    <footer class="foot">
+      <p>OIの偏りは「壁・磁石」の地図であって方向予測ではない。最終判断は自分で。</p>
+      <p id="foot-updated"></p>
+    </footer>
+  </main>
+</div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
 <script src="app.js"></script>
