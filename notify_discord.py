@@ -179,6 +179,62 @@ def build_embeds_section(units, ts):
     return embeds
 
 
+REASON_SEC = "── 今回の発火理由 ──"
+
+
+def extract_reasons(report_text):
+    """advisor.py の生レポートから発火理由の箇条書きを抜く"""
+    if not report_text or REASON_SEC not in report_text:
+        return []
+    body = report_text.split(REASON_SEC, 1)[1]
+    out = []
+    for ln in body.splitlines():
+        s = ln.strip()
+        if s.startswith("──"):
+            break
+        if s.startswith("・"):
+            out.append(s[1:].strip())
+    return out
+
+
+def extract_overview(text):
+    """考察の1章 (## 1. 地形サマリ …) の本文。無ければ先頭の数行"""
+    lines = text.splitlines()
+    start = None
+    for i, ln in enumerate(lines):
+        if re.match(r"^\s*#{1,2}\s*1[\.．)]", ln):
+            start = i + 1
+            break
+    if start is None:
+        body = [ln for ln in lines if ln.strip() and not is_heading(ln)][:10]
+        return "\n".join(body)
+    body = []
+    for ln in lines[start:]:
+        if re.match(r"^\s*#{1,2}\s", ln):
+            break
+        if ln.strip():
+            body.append(ln.rstrip())
+    return "\n".join(body)
+
+
+def build_embeds_summary(text, ts, link, reasons, cur, kind_label=None):
+    """要約1つだけ: 発火理由 + 1章 + リンク (全文は GitHub Pages 側)"""
+    overview = extract_overview(text)
+    parts = []
+    if reasons:
+        parts.append("**発火理由**\n" + "\n".join(f"・{r}" for r in reasons))
+    if overview:
+        parts.append(overview)
+    body = "\n\n".join(parts)
+    tail = f"\n\n📄 [レポート全文・解析データ・推移を見る]({link})"
+    body = body[:MAX_DESC - len(tail) - 1] + tail
+    title = f"{cur} 考察" + (f" ({kind_label})" if kind_label else "")
+    e = {"title": title[:MAX_TITLE], "url": link, "description": body,
+         "color": pick_color(overview or body), "timestamp": ts,
+         "footer": {"text": "advisor.py × Claude / 全文は GitHub Pages"}}
+    return [e]
+
+
 def paginate(embeds):
     """Discord の 10個/6000文字/payload 10KiB 制限でメッセージに分割"""
     msgs, cur, cur_len, cur_bytes = [], [], 0, 0
@@ -309,8 +365,14 @@ def post(webhook, payload, files=None, retries=3):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=["sentence", "section"], default="sentence",
-                    help="sentence: 1文=1embed (既定) / section: 見出し単位でまとめる")
+    ap.add_argument("--mode", choices=["sentence", "section", "summary"],
+                    default="sentence",
+                    help="sentence: 1文=1embed (既定) / section: 見出し単位でまとめる / "
+                         "summary: 発火理由と1章だけの要約1つ + リンク (--link 必須)")
+    ap.add_argument("--link", default=None, help="summary: 全文を置いた URL")
+    ap.add_argument("--report", default=None, metavar="FILE",
+                    help="summary: 発火理由を読む advisor.py の生レポート")
+    ap.add_argument("--kind", default=None, help="summary: 定時/発火/手動 などの種別表記")
     ap.add_argument("--env", default=os.path.join(
         os.path.dirname(os.path.abspath(__file__)), ".env"))
     ap.add_argument("--webhook", default=None, help="DISCORD_WEBHOOK を上書き")
@@ -352,15 +414,31 @@ def main():
 
     now = datetime.now(timezone.utc)
     ts = now.isoformat()
-    units = split_units(text)
-    build = build_embeds_sentence if args.mode == "sentence" else build_embeds_section
-    embeds = build(units, ts)
+    if args.mode == "summary":
+        if not args.link:
+            print("--mode summary には --link が必要です", file=sys.stderr)
+            sys.exit(1)
+        report_text = ""
+        if args.report:
+            try:
+                with open(args.report, encoding="utf-8") as f:
+                    report_text = f.read()
+            except OSError as e:
+                print(f"レポートを読めません: {e}", file=sys.stderr)
+        embeds = build_embeds_summary(text, ts, args.link, extract_reasons(report_text),
+                                      cur, args.kind)
+    else:
+        units = split_units(text)
+        build = build_embeds_sentence if args.mode == "sentence" else build_embeds_section
+        embeds = build(units, ts)
     if not embeds:
         print("整形できるセンテンスがありませんでした", file=sys.stderr)
         sys.exit(1)
 
     header = args.content if args.content is not None else \
         f"**{cur} 地形 × イベントリスク考察**  `{now:%Y-%m-%d %H:%M UTC}`"
+    if args.mode == "summary" and args.content is None:
+        header += f"  <{args.link}>"
     username = args.username or f"{cur} OI Advisor"
 
     image = args.image if (args.image and os.path.exists(args.image)) else None
@@ -369,7 +447,9 @@ def main():
 
     # 図は考察の前に、独立した embed として置く。
     # 考察のどこか末尾にぶら下げると、その節と関係があるように見えてしまう
-    if image:
+    if image and args.mode == "summary":
+        embeds[0]["image"] = {"url": "attachment://" + os.path.basename(image)}
+    elif image:
         cap = ""
         if args.image_caption:
             try:

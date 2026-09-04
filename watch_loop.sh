@@ -13,7 +13,8 @@
 #   TH_SPOT=2.0 TH_GEX=15 TH_OI=3000 TH_HL_OI=10 TH_SKEW=5 TH_ETF_OI=50000  発火閾値
 #   TH_ETF_FLOW=400 TH_CB_PREM=0.15 TH_BASIS=3   ETF資金流出入(百万USD)・Coinbaseプレミアム(pt)・先物ベーシス(pt)
 #   MODE=section             Discord embed の整形モード
-#   NOTIFY=1                 0 にすると Discord へ送らない(ログのみ)
+#   NOTIFY=1                 0 にすると Discord へ送らない(ログのみ)。GitHub Pages への公開も行わない
+#   PAGES_URL (.env)         設定すると全文を GitHub Pages に公開し、Discord は要約 + リンクだけになる
 #
 # 通知には元データを2点添付する:
 #   report-*.txt   advisor.py の生レポート(Deribitから読んだ地形)
@@ -218,9 +219,31 @@ $(tail -c 400 "$analysis" 2>/dev/null)
             [ -s "${png%.png}.caption.txt" ] && \
                 img+=(--image-caption "${png%.png}.caption.txt")
         fi
-        if "$PY" notify_discord.py --mode "$MODE" --currency "$CURRENCY" \
-                --file "$analysis" \
-                "${img[@]}" --attach-source --attach "$rpt" 2>>"$LOGFILE"; then
+        # GitHub Pages に全文を積み、Discord は要約 + リンクだけにする。
+        # PAGES_URL 未設定 (rc=2) や公開失敗のときは従来の全文通知に戻す
+        local url="" kind="${reason_sched:+sched}"
+        local pub=(--currency "$CURRENCY" --report "$rpt" --analysis "$analysis" \
+                   --kind "${kind:-trigger}")
+        [ -s "$png" ] && pub+=(--png "$png")
+        [ -s "${png%.png}.caption.txt" ] && pub+=(--caption "${png%.png}.caption.txt")
+        url=$("$PY" publish_pages.py add "${pub[@]}" 2>>"$LOGFILE")
+        local prc=$?
+        if [ $prc -eq 0 ] && [ -n "$url" ]; then
+            log "GitHub Pages に公開: $url"
+            alert_clear pages
+        elif [ $prc -ne 2 ]; then
+            log "GitHub Pages への公開に失敗 (rc=$prc) — 全文通知にフォールバック"
+            alert pages "GitHub Pages への公開に失敗しました (publish_pages.py rc=$prc)。Discord には全文で送ります。"
+            url=""
+        fi
+        local ntf=(--currency "$CURRENCY" --file "$analysis" "${img[@]}")
+        if [ -n "$url" ]; then
+            ntf+=(--mode summary --link "$url" --report "$rpt" \
+                  --kind "$([ -n "$reason_sched" ] && echo 定時 || echo 発火)")
+        else
+            ntf+=(--mode "$MODE" --attach-source --attach "$rpt")
+        fi
+        if "$PY" notify_discord.py "${ntf[@]}" 2>>"$LOGFILE"; then
             log "Discord へ送信: $analysis"
             alert_clear
         else

@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Crypto Watch — オプション地形 × イベントリスク</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <div class="wrap">
+    <div class="brand">
+      <span class="logo">◎</span>
+      <span class="name">Crypto Watch</span>
+      <span class="sub">オプション地形 × イベントリスク考察</span>
+    </div>
+    <nav class="tabs" id="tabs" aria-label="通貨"></nav>
+  </div>
+</header>
+
+<main class="wrap" id="main">
+  <section class="controls">
+    <label class="runsel">
+      <span>考察</span>
+      <select id="run-select" aria-label="考察を選ぶ"></select>
+    </label>
+    <div class="buttons">
+      <button id="btn-live" type="button" title="Deribit / Coinbase / Binance の公開APIから現在値を取り、概要に重ねる">⟳ 最新データを取得</button>
+      <a id="btn-claude" class="btn" target="_blank" rel="noopener" href="#">Claude に相談</a>
+      <a id="btn-chatgpt" class="btn" target="_blank" rel="noopener" href="#">ChatGPT に相談</a>
+      <button id="btn-copy" type="button" title="考察と生データをクリップボードへ">レポートをコピー</button>
+    </div>
+    <p class="hint">フルの再考察はこのページからは起動できません。Discord の <code>/crypto_run</code> を使ってください。</p>
+  </section>
+
+  <p id="status" class="status" hidden></p>
+
+  <article id="report" hidden>
+    <header class="run-head">
+      <h1 id="run-title"></h1>
+      <div id="run-meta" class="meta"></div>
+      <ul id="reasons" class="reasons"></ul>
+    </header>
+
+    <section class="section" id="sec-overview">
+      <h2>概要</h2>
+      <div id="tiles" class="tiles"></div>
+      <p id="live-note" class="live-note" hidden></p>
+      <div id="overview" class="md"></div>
+      <figure id="figure" hidden>
+        <img id="terrain" alt="オプション地形図">
+        <figcaption id="caption"></figcaption>
+      </figure>
+    </section>
+
+    <section class="section" id="sec-analysis">
+      <h2>分析</h2>
+      <div id="chapters"></div>
+    </section>
+
+    <section class="section" id="sec-series">
+      <h2>推移</h2>
+      <p class="note" id="series-note"></p>
+      <div id="charts" class="charts"></div>
+    </section>
+
+    <section class="section" id="sec-data">
+      <h2>解析データ</h2>
+      <p class="note">advisor.py が Deribit / Hyperliquid / CBOE / iShares / Coinbase から読んだ生の観測値。考察はこれを入力にしている。</p>
+      <div id="raw"></div>
+    </section>
+
+    <section class="section" id="sec-sources">
+      <h2>出典・参照リンク</h2>
+      <ul id="sources" class="sources"></ul>
+    </section>
+  </article>
+
+  <footer class="foot">
+    <p>OIの偏りは「壁・磁石」の地図であって方向予測ではない。最終判断は自分で。</p>
+    <p id="foot-updated"></p>
+  </footer>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

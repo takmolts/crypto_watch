@@ -49,6 +49,17 @@ if [ -s "$PNG" ]; then
     IMG=(--image "$PNG")
     [ -s "${PNG%.png}.caption.txt" ] && IMG+=(--image-caption "${PNG%.png}.caption.txt")
 fi
-"$PY" notify_discord.py --mode "$MODE" --currency "$CURRENCY" --file "$ANALYSIS" \
-    "${IMG[@]}" --attach-source --attach "$RPT" "$@"
+# GitHub Pages に積めたら要約 + リンク、無理なら従来の全文
+PUB=(--currency "$CURRENCY" --report "$RPT" --analysis "$ANALYSIS" --kind manual)
+[ -s "$PNG" ] && PUB+=(--png "$PNG")
+[ -s "${PNG%.png}.caption.txt" ] && PUB+=(--caption "${PNG%.png}.caption.txt")
+URL=$("$PY" publish_pages.py add "${PUB[@]}") || URL=""
+if [ -n "$URL" ]; then
+    echo "pages: $URL" >&2
+    "$PY" notify_discord.py --mode summary --link "$URL" --report "$RPT" --kind 手動 \
+        --currency "$CURRENCY" --file "$ANALYSIS" "${IMG[@]}" "$@"
+else
+    "$PY" notify_discord.py --mode "$MODE" --currency "$CURRENCY" --file "$ANALYSIS" \
+        "${IMG[@]}" --attach-source --attach "$RPT" "$@"
+fi
 echo "log: $ANALYSIS / $RPT" >&2

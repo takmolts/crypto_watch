@@ -22,7 +22,9 @@ Deribit のオプション建玉から BTC / ETH の「地形」(壁・支持・
 |---|---|
 | `advisor.py` | 建玉/GEX/ボラ構造(スキュー・期間構造)/米国ETF地形/米国需要(ETFフロー・Coinbaseプレミアム・先物ベーシス)の計算、レポート生成、発火判定 (`--check`)、作図の呼び出し |
 | `plot_terrain.py` | 地形図PNGの描画と「図の読みどころ」の生成 (matplotlib) |
-| `notify_discord.py` | テキストを embed に整形して Webhook へ送信。画像・元データを添付 |
+| `notify_discord.py` | テキストを embed に整形して Webhook へ送信。画像・元データを添付。`--mode summary` で要約 + リンクの1通 |
+| `publish_pages.py` | 考察・解析データ・推移を gh-pages に積んで公開 (`PAGES_URL` 設定時) |
+| `pages/` | サイトの静的ファイル (HTML/CSS/JS)。`publish_pages.py` がコピーして公開する |
 | `watch_loop.sh` | 定期実行の本体。定時考察・クールダウン・日次上限を通貨別に管理 |
 | `run_watch.sh` | 手動で1回だけ通す (自動運転の状態を触らない) |
 | `crypto_bot.py` | Discord bot。`/crypto_status` で稼働状況、`/crypto_run` でその場の考察 (任意) |
@@ -183,6 +185,55 @@ journalctl --user -u 'btcwatch@*' -f
 - 続く embed: Claude の考察を見出し単位で分割、キーワードで色付け
 - 添付: `terrain-*.png` / `analysis-*.md` (embed化前の考察) / `report-*.txt` (生レポート)
 
+## GitHub Pages に全文を公開する (任意)
+
+考察が増えて Discord では追いきれなくなったので、全文・解析データ・推移はサイトに積み、
+Discord は**要約 + リンクの1通**にできる。`.env` に `PAGES_URL` を書くと有効になる。
+
+```
+発火 → advisor.py → claude -p → publish_pages.py add  (gh-pages に積んで push)
+                                   └─ 成功: notify_discord.py --mode summary --link URL
+                                   └─ 失敗/未設定: 従来の全文通知
+```
+
+サイトの中身 (通貨はタブで切替、考察は直近 `PAGES_KEEP_DAYS` 日分を選んで振り返れる):
+
+1. **概要** — 主要数値のタイル、発火理由、考察の1章、地形図。
+   「最新データを取得」でブラウザから Deribit / Coinbase / Binance を直接読み、考察時点との差を重ねる
+2. **分析** — 考察の2〜7章
+3. **推移** — 毎時スナップショットからの数日分の折れ線 (現物・DVOL・ファンディング・ベーシス・
+   Coinbaseプレミアム・スキュー・GEX・HL建玉) と ETF 資金流出入の棒
+4. **解析データ** — advisor.py の生レポートを節ごとに折りたたみ
+5. **出典** — 考察中の URL
+
+「Claude に相談」「ChatGPT に相談」は、概要と URL を入れたプロンプト付きで各サービスを開く。
+「レポートをコピー」は考察と生データをクリップボードへ (貼り付けて相談する用)。
+フルの再考察は静的サイトからは起動できないので、Discord の `/crypto_run` を使う。
+
+### セットアップ
+
+```bash
+# .env
+PAGES_URL=https://takmolts.github.io/crypto_watch/
+PAGES_KEEP_DAYS=7
+```
+
+1. 初回だけ手で公開して gh-pages ブランチを作る:
+   `./run_watch.sh` か、既存のログから
+   `python3 publish_pages.py add --currency BTC --report logs/report-….txt --analysis logs/analysis-….md --png logs/terrain-….png --kind manual`
+2. GitHub のリポジトリ設定 → Pages → Source を「Deploy from a branch」、Branch を `gh-pages` / `/ (root)` にする
+3. 数分後に `PAGES_URL` で見えるようになる
+
+注意:
+
+- **Pages は公開サイト**。無料プランでは private リポジトリの Pages は使えない。
+  載るのは市場データと考察だけで、webhook 等の秘密は含まない (`.env` は git 管理外)
+- 履歴は持たない: 毎回 orphan コミット1つを force-push するので、データを積んでもリポジトリは
+  肥大しない。蓄積の実体は `~/.btc_oi_advisor/pages/` (`PAGES_DIR`)。
+  失っても `publish_pages.py` が gh-pages から取り直す
+- 静的ファイル (`pages/`) を直したら `python3 publish_pages.py rebuild` で差し替えられる
+- push は `origin` に SSH/HTTPS で行うので、その認証が通っている必要がある
+
 ## 失敗したとき
 
 考察や送信が落ちても今までは無言だったので、**届かないこと**でしか気づけなかった。
@@ -192,6 +243,7 @@ journalctl --user -u 'btcwatch@*' -f
 |---|---|---|
 | `advisor.py` (観測) | `advisor` | 次の毎時観測で復帰 |
 | `claude -p` (考察) | `claude` / `claude-empty` | レポートは残る。定時なら次の時刻で出し直す |
+| `publish_pages.py` (公開) | `pages` | Discord には全文で送る (通知は止まらない) |
 | Discord 送信 | `discord` | 考察は `analysis-*.md` に残る。定時なら次の時刻で出し直す |
 
 定時考察の「済み」印 (`~/.btc_oi_advisor/last_sched.<通貨>`) は**送信できたときだけ**書く。
