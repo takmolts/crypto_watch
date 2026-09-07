@@ -318,22 +318,56 @@ const CATS = [
 const DATE_RE = /(?:(\d{4})[\/年])?(\d{1,2})[\/月](\d{1,2})日?\s*(?:\(([月火水木金土日])\))?(?:[^\n]{0,12}?(\d{1,2}):(\d{2})\s*(JST|UTC|ET|EST|EDT))?/g;
 function parseEvents(run) {
   const ch = (run.chapters || []).find(c => /^\s*3[\.．)]/.test(c.title) || /カレンダー/.test(c.title));
-  if (!ch) return { events: [], md: '' };
+  const structured = Array.isArray(run.events) && run.events.length > 0;
+  if (!ch && !structured) return { events: [], md: '', structured };
   const ref = new Date(run.ts);
   const refY = ref.getUTCFullYear(), refM = ref.getUTCMonth() + 1;
+  // 考察の末尾に ```events ブロック (日付|時刻|種別|予定名|一言) があれば publish_pages.py が
+  // run.events に起こしている。こちらを優先し、無い古い考察だけ本文の日付から拾う
+  const events = structured ? eventsFromRun(run.events) : eventsFromMd(ch.md, refY, refM);
+  // 満期は本文に無くても補う (Deribit 月次 = 最終金曜 08:00 UTC)
+  const hasExpiry = (t) => events.some(e => e.t && Math.abs(e.t - t) < 36e5 * 20 && /満期/.test(e.title + e.detail));
+  for (let k = 0; k < 2; k++) {
+    const t = lastFriday(refY, refM - 1 + k);
+    if (t > ref.getTime() - 864e5 && !hasExpiry(t)) events.push({ t, title: 'Deribit 月次満期 (最終金曜 08:00 UTC)', detail: '計算で補った予定。オプションカット直後はガンマ総量が減り壁が柔らかくなる', cat: CATS[0], auto: true });
+  }
+  events.sort((a, b) => (a.t ?? Infinity) - (b.t ?? Infinity));
+  return { events, md: ch ? ch.md : '', structured };
+}
+function eventsFromRun(list) {
+  const out = [];
+  for (const e of list) {
+    if (!e || !e.title) continue;
+    let t = null;
+    if (e.all_day && /^\d{4}-\d{2}-\d{2}$/.test(e.date || '')) {
+      const [y, mo, d] = e.date.split('-').map(Number);
+      t = Date.UTC(y, mo - 1, d, 12 - TZ.off);   // 時刻不明: その日の正午 (ローカル)
+    } else if (e.ts) t = Date.parse(e.ts);
+    const cat = CATS.find(c => c.key === e.cat) || CATS[CATS.length - 1];
+    let title = stripMd(e.title);
+    if (title.length > 60) title = title.slice(0, 58) + '…';
+    out.push({ t: isNum(t) ? t : null, allDay: !!e.all_day, title, detail: tidyMd(e.note), cat });
+  }
+  return out;
+}
+function eventsFromMd(mdText, refY, refM) {
   const events = [];
-  const lines = ch.md.split('\n');
   let last = null;
-  for (const raw of lines) {
+  for (const raw of mdText.split('\n')) {
     const line = raw.replace(/\t/g, '    ');
     const top = /^[-*・]\s+/.test(line), sub = /^\s{2,}[-*・]\s+/.test(line);
     if (!top && !sub && !line.trim()) continue;
     if (sub || (!top && last && line.trim())) { if (last) last.detail += (last.detail ? '\n' : '') + line.replace(/^\s+[-*・]\s+/, '- ').trim(); continue; }
     const body = line.replace(/^[-*・]\s+/, '');
-    const ms = [...body.matchAll(DATE_RE)].filter(m => +m[2] >= 1 && +m[2] <= 12 && +m[3] >= 1 && +m[3] <= 31);
+    // 太字の見出し「**M/D (曜) HH:MM JST — 名称**」があればその中だけで日付を探す。
+    // 説明文中の「(9/5〜9/17)」などを別の予定に取り違えないため。見出し内の期間表記は開始日だけ採る
+    const head = /^\*\*(.+?)\*\*/.exec(body);
+    const scope = head ? head[1] : body;
+    let ms = [...scope.matchAll(DATE_RE)].filter(m => +m[2] >= 1 && +m[2] <= 12 && +m[3] >= 1 && +m[3] <= 31);
+    if (head) ms = ms.slice(0, 1);
     if (!ms.length) { const tt = stripMd(body).split(/[。：:]/)[0].slice(0, 60); events.push({ t: null, title: tt, detail: tidyMd(body.slice(body.indexOf('。') + 1)), cat: catOf(tt) }); last = events[events.length - 1]; continue; }
     ms.forEach((m, i) => {
-      const seg = body.slice(m.index, i + 1 < ms.length ? ms[i + 1].index : undefined);
+      const seg = head ? scope.slice(m.index) : body.slice(m.index, i + 1 < ms.length ? ms[i + 1].index : undefined);
       let y = m[1] ? +m[1] : refY;
       const mo = +m[2], d = +m[3];
       if (!m[1] && mo < refM - 6) y += 1;
@@ -345,26 +379,25 @@ function parseEvents(run) {
       } else t = Date.UTC(y, mo - 1, d, 12 - TZ.off);   // 時刻不明: その日の正午 (ローカル)
       // 「21:30 JST / 12:30 UTC — 名称」のような併記時刻と区切り記号を落とす
       let rest = seg.slice(m[0].length).replace(/^(\s*[\/／]?\s*\d{1,2}:\d{2}\s*(?:JST|UTC|ET|EST|EDT))*[\s—–\-:：]*/, '');
-      const cut = rest.indexOf('。');
-      let title = stripMd(cut >= 0 ? rest.slice(0, cut) : rest).replace(/^(本日|明日|来週)\s*/, '').replace(/[\s:：—–\-]+$/, '');
+      // 「9/8 (火)〜9/9 (水) — 材料真空」の終端側は題名から外して末尾に添える
+      let span = '';
+      const r = head && /^[〜~]\s*((?:\d{4}[\/年])?\d{1,2}[\/月]\d{1,2}日?\s*(?:\([月火水木金土日]\))?(?:\s*\d{1,2}:\d{2}\s*(?:JST|UTC|ET|EST|EDT))?)\s*[—–\-:：]*\s*/.exec(rest);
+      if (r) { span = ` (〜${r[1].replace(/\s*\([月火水木金土日]\)/, '').trim()})`; rest = rest.slice(r[0].length); }
+      let title, detail;
+      if (head) { title = rest; detail = tidyMd(body.slice(head[0].length)); }
+      else { const cut = rest.indexOf('。'); title = cut >= 0 ? rest.slice(0, cut) : rest; detail = tidyMd(cut >= 0 ? rest.slice(cut + 1) : ''); }
+      title = stripMd(title).replace(/^(本日|明日|来週)\s*/, '').replace(/[\s:：—–\-]+$/, '');
       if (title.length > 60) title = title.slice(0, 58) + '…';
-      const detail = tidyMd(cut >= 0 ? rest.slice(cut + 1) : '');
-      events.push({ t, allDay: !m[5], title: title || stripMd(seg).slice(0, 60), detail, cat: catOf(title) });
+      title = (title || stripMd(seg).slice(0, 60)) + span;
+      events.push({ t, allDay: !m[5], title, detail, cat: catOf(title) });
     });
     last = events[events.length - 1];
   }
-  // 満期は本文に無くても補う (Deribit 月次 = 最終金曜 08:00 UTC)
-  const hasExpiry = (t) => events.some(e => e.t && Math.abs(e.t - t) < 36e5 * 20 && /満期/.test(e.title + e.detail));
-  for (let k = 0; k < 2; k++) {
-    const t = lastFriday(refY, refM - 1 + k);
-    if (t > ref.getTime() - 864e5 && !hasExpiry(t)) events.push({ t, title: 'Deribit 月次満期 (最終金曜 08:00 UTC)', detail: '計算で補った予定。オプションカット直後はガンマ総量が減り壁が柔らかくなる', cat: CATS[0], auto: true });
-  }
-  events.sort((a, b) => (a.t ?? Infinity) - (b.t ?? Infinity));
-  return { events, md: ch.md };
+  return events;
 }
 function tidyMd(s) {
   // 先頭の区切りを落とし、対になっていない ** (題名側で切れた分) を除く
-  let t = String(s || '').replace(/^\s*[—–\-:：、]\s*/, '').trim();
+  let t = String(s || '').replace(/^\s*[—–\-:：、。]\s*/, '').trim();
   if ((t.match(/\*\*/g) || []).length % 2) t = t.replace(/\*\*/g, '');
   return t;
 }
@@ -376,10 +409,10 @@ function lastFriday(y, m0) { const d = new Date(Date.UTC(y, m0 + 1, 0, 8)); whil
 
 function renderCalendar() {
   const run = state.run;
-  const { events, md: raw } = parseEvents(run);
+  const { events, md: raw, structured } = parseEvents(run);
   const tl = $('#timeline'), list = $('#event-list');
   tl.innerHTML = ''; list.innerHTML = '';
-  $('#cal-sub').textContent = events.length ? `3章から抽出 / 時刻は ${TZ.label}` : '';
+  $('#cal-sub').textContent = events.length ? `${structured ? '3章の予定一覧から' : '3章の本文から抽出'} / 時刻は ${TZ.label}` : '';
   setHTML($('#cal-raw-body'), md(raw));
   $('#cal-raw').hidden = !raw;
   if (!events.length) { tl.innerHTML = '<p class="note">イベントカレンダーの章がありません。</p>'; $('#cal-legend').innerHTML = ''; return; }

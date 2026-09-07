@@ -32,8 +32,9 @@ import shutil
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
-from notify_discord import load_env
+from notify_discord import EVENTS_BLOCK_RE, load_env
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE, "pages")
@@ -52,6 +53,14 @@ SNAP_RE = re.compile(r"^([A-Z]+)_(\d{8})_(\d{6})\.json$")
 SEC_RE = re.compile(r"^──\s*(.+?)\s*──$")
 HEAD_RE = re.compile(r"^(#{1,2})\s+(.+?)\s*$")
 URL_RE = re.compile(r"https?://[^\s<>()\[\]\"']+")
+
+# ```events ブロックの1行: 「日付 | 時刻 | 種別 | 予定名 | 一言」
+EVENT_CATS = ("expiry", "cb", "macro", "crypto", "other")
+EVENT_TZ = {"JST": "Asia/Tokyo", "UTC": "UTC", "ET": "America/New_York",
+            "EST": "America/New_York", "EDT": "America/New_York"}
+EVENT_DATE_ISO_RE = re.compile(r"^(\d{4})[-/.年](\d{1,2})[-/.月](\d{1,2})日?$")
+EVENT_DATE_MD_RE = re.compile(r"^(\d{1,2})[/月](\d{1,2})日?$")
+EVENT_TIME_RE = re.compile(r"^(\d{1,2}):(\d{2})\s*([A-Za-z]{2,3})?")
 
 
 def log(msg):
@@ -157,6 +166,65 @@ def parse_report(text):
             reasons = [ln.strip()[1:].strip() for ln in s["text"].splitlines()
                        if ln.strip().startswith("・")]
     return sections, reasons
+
+
+def parse_event_line(raw, ref):
+    """```events ブロックの1行を予定 dict にする。形が違う行は None"""
+    line = raw.strip().strip("|").strip()
+    if not line or line.startswith("#") or line.lower().startswith("yyyy"):
+        return None
+    cols = [c.strip() for c in line.split("|")]
+    if len(cols) < 4:
+        return None
+    date_s, time_s, cat, title = cols[0], cols[1], cols[2].lower(), cols[3]
+    note = " | ".join(cols[4:]).strip()
+    # 「2026-09-10 (木)」のような曜日の併記は落とす
+    date_s = re.sub(r"\s*[(（].*?[)）]\s*", "", date_s).strip()
+    m = EVENT_DATE_ISO_RE.match(date_s)
+    if m:
+        y, mo, d = (int(x) for x in m.groups())
+    else:
+        m = EVENT_DATE_MD_RE.match(date_s)
+        if not m:
+            return None
+        mo, d = (int(x) for x in m.groups())
+        # 年が無ければ考察時点の年。半年以上前に見える月は翌年扱い
+        y = ref.year + (1 if mo < ref.month - 6 else 0)
+    tm = EVENT_TIME_RE.match(time_s)
+    try:
+        if tm:
+            tz = ZoneInfo(EVENT_TZ.get((tm.group(3) or "JST").upper(), "Asia/Tokyo"))
+            dt = datetime(y, mo, d, int(tm.group(1)), int(tm.group(2)), tzinfo=tz)
+        else:
+            # 時刻不明: 並び順のために日本時間の正午を仮の時刻にする (表示側は date を使う)
+            dt = datetime(y, mo, d, 12, tzinfo=ZoneInfo("Asia/Tokyo"))
+    except ValueError:
+        return None
+    title = title.replace("**", "").strip()
+    if not title:
+        return None
+    return {"date": f"{y:04d}-{mo:02d}-{d:02d}",
+            "ts": dt.astimezone(timezone.utc).isoformat(),
+            "all_day": tm is None,
+            "cat": cat if cat in EVENT_CATS else "other",
+            "title": title, "note": note.replace("**", "").strip()}
+
+
+def parse_events(mdtext, ref):
+    """3章末尾の ```events ブロックを予定の一覧にし、本文からはブロックを取り除く。
+    (ブロックが無い古い考察は空リストで、表示側が本文の日付から起こす)"""
+    events = []
+
+    def grab(m):
+        for raw in m.group(1).splitlines():
+            ev = parse_event_line(raw, ref)
+            if ev:
+                events.append(ev)
+        return ""
+
+    text = EVENTS_BLOCK_RE.sub(grab, mdtext)
+    events.sort(key=lambda e: e["ts"])
+    return events, text
 
 
 def parse_analysis(mdtext):
@@ -349,6 +417,7 @@ def add_run(cfg, args):
             caption = f.read().strip()
 
     sections, reasons = parse_report(report)
+    events, analysis = parse_events(analysis, ts)
     chapters, overview, sources = parse_analysis(analysis)
     summary = latest_summary(cfg["state_dir"], cur)
 
@@ -364,6 +433,7 @@ def add_run(cfg, args):
         "kind": args.kind, "kind_label": KIND_LABEL.get(args.kind, args.kind),
         "reasons": reasons, "summary": summary,
         "overview_md": overview, "chapters": chapters, "sources": sources,
+        "events": events,
         "report_sections": sections, "image": image, "caption": caption,
         "analysis_md": analysis, "report_txt": report,
     }

@@ -47,6 +47,9 @@ WARN_WORDS = ("注意", "警戒", "リスク", "不透明", "急変", "ボラ", 
 HEAD_RE = re.compile(r"^\s*(?:#{1,6}\s+|─+\s*|\*\*)|^\s*【.+】|^\s*[■◆▼▲]\s*\S+")
 SENT_SPLIT_RE = re.compile(r"(?<=[。！？])\s*")
 BULLET_RE = re.compile(r"^\s*(?:[-*・>]|\d+[.)])\s+")
+# 3章末尾の ```events ブロック (年表の元データ)。読み物ではないので通知からは外す
+EVENTS_BLOCK_RE = re.compile(r"^[ \t]*```[ \t]*events[^\n]*\n(.*?)^[ \t]*```[ \t]*$\n?",
+                             re.S | re.M)
 
 
 # ---------------------------------------------------------------- env
@@ -395,6 +398,7 @@ def main():
 
     text = (open(args.file, encoding="utf-8").read() if args.file
             else sys.stdin.read())
+    text = EVENTS_BLOCK_RE.sub("", text)
     if not text.strip():
         print("入力が空です", file=sys.stderr)
         sys.exit(1)
