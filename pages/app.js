@@ -357,7 +357,9 @@ function renderPriceChart(sc) {
   const hour = 36e5, dayMs = 864e5;
   const W = Math.max(320, box.clientWidth || 640), P = { l: 8, r: 68, b: 20 }, H = sc.H + P.b;
   const plotR = W - P.r, axisY = sc.H - 12;
-  const t0 = rows[0].t, t1 = rows[rows.length - 1].t + hour;
+  // 右側 1/5 は空けておく (最新の足が横幅の 4/5 の位置)。水準の名前をそこに置き、足と重ならないようにする
+  const t0 = rows[0].t, tLast = Math.max(rows[rows.length - 1].t + hour, Math.min(now, ref + 10 * dayMs));
+  const t1 = t0 + (tLast - t0) / 0.8;
   const X = (t) => P.l + (t - t0) / (t1 - t0) * (plotR - P.l);
   // 縦軸は足の値幅に合わせる (ラダーとは独立)。主力の壁と支持が現値 ±6% 以内なら範囲に取り込み、器が見えるようにする
   let lo = Math.min(...rows.map(k => k.l)), hi = Math.max(...rows.map(k => k.h));
@@ -411,9 +413,10 @@ function renderPriceChart(sc) {
     svg.appendChild(el('line', { x1: x, x2: x, y1: 16, y2: axisY, stroke: col, 'stroke-dasharray': dash }));
     svg.appendChild(el('text', { x: x + (flip ? -3 : 3), y: 12, class: 'mark', 'text-anchor': flip ? 'end' : 'start' }, text));
   };
-  // 「いま」は常に線の右 (上段はチップが無いので右端でもはみ出さない)、「考察時点」は右端に寄っていたら線の左
-  if (ref >= t0 && ref <= t1) mark(ref, '考察時点', cssVar('--text-2'), '4 3', X(ref) > plotR - 60);
-  if (now > ref + hour && now <= t1) mark(now, 'いま', cssVar('--text-3'), '2 3', false);
+  // 「いま」は線の右。「考察時点」は右端に寄っているか「いま」と近くて文字が重なるなら線の左に出す
+  const showNow = now > ref + hour && now <= t1;
+  if (ref >= t0 && ref <= t1) mark(ref, '考察時点', cssVar('--text-2'), '4 3', X(ref) > plotR - 60 || (showNow && X(now) - X(ref) < 56));
+  if (showNow) mark(now, 'いま', cssVar('--text-3'), '2 3', false);
   // 見える範囲にある水準だけ横線にする。右端のチップは重ならないよう上から順に 18px 空け、線とずれていれば引き出し線で結ぶ
   const shown = levels.filter(l => l.p > lo && l.p < hi).concat(isNum(spot) && spot > lo && spot < hi ? [{ p: spot, type: 'spot', label: '現値 (考察時点)' }] : [])
     .sort((a, b) => b.p - a.p);
