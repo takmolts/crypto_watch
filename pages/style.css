@@ -40,7 +40,7 @@ small { font-weight: 400; color: var(--text-3); font-size: 12px; margin-left: 8p
 
 /* layout */
 .layout { display: grid; grid-template-columns: 250px minmax(0, 1fr); gap: 22px; padding-top: 18px; align-items: start; }
-.layout > *, .side-box, .tile, .scn, .trig, .chart, .event-list li, .chapter { min-width: 0; }
+.layout > *, .side-box, .tile, .scn, .trig, .chart, .event-list li, .chapter, .ladder-box, .pchart-box { min-width: 0; }
 #main { max-width: 100%; }
 .side { position: sticky; top: 68px; display: flex; flex-direction: column; gap: 12px; max-height: calc(100vh - 80px); overflow: auto; }
 .side-box { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; }
@@ -125,7 +125,7 @@ figcaption { font-size: 12.5px; color: var(--text-2); white-space: pre-wrap; mar
 
 /* price chart (ラダーと同じ縦軸に 1h足を並べる) */
 .pchart { position: relative; }
-.pchart svg { width: 100%; height: auto; display: block; }
+.pchart svg { width: 100%; max-width: 100%; height: auto; display: block; }
 .pchart text { font-family: var(--sans); fill: var(--text-2); font-size: 11px; }
 .pchart text.chip { fill: #fff; font-size: 10.5px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .pchart text.chip.inv { fill: var(--bg); }   /* 現値チップは文字色 (--text) 地なので反転 */
@@ -214,7 +214,7 @@ details pre { white-space: pre-wrap; font-family: var(--mono); font-size: 12.5px
   .run-list { max-height: 120px; overflow: auto; }
   .toc { flex-direction: row; flex-wrap: wrap; gap: 2px 4px; }
   .actions button, .actions .btn { padding: 6px 8px; font-size: 12px; }
-  .two-col { grid-template-columns: 1fr; }
+  .two-col { grid-template-columns: minmax(0, 1fr); }
   .sub { display: none; }
   .section { padding: 14px 14px; }
 }

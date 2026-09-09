@@ -311,7 +311,7 @@ function renderLadder(sc) {
   box.innerHTML = '';
   if (!sc.ok) { box.innerHTML = '<p class="empty">水準を読める生レポートがありません。</p>'; return; }
   const { spot, band, rows, H, Y, far } = sc;
-  const W = Math.max(300, Math.min(520, box.clientWidth || 340));
+  const W = Math.max(240, Math.min(520, box.clientWidth || 340));
   const x0 = 10, x1 = Math.round(W * 0.3);   // 目盛りの線 (右側はラベル)
   const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}` });
   const el = svgEl;
@@ -352,10 +352,15 @@ function renderPriceChart(sc) {
   const cd = state.candles || {};
   if (!sc.ok) { box.innerHTML = '<p class="empty">水準が無いので描けません。</p>'; return; }
   if (!cd.rows) { box.innerHTML = `<p class="empty">${cd.err ? `足データの取得に失敗 (${esc(cd.err)})。` : '足データを取得中…'}</p>`; return; }
-  const run = state.run, rows = cd.rows, ref = new Date(run.ts).getTime(), now = Date.now();
+  const run = state.run, ref = new Date(run.ts).getTime(), now = Date.now();
   const { band, spot, levels } = sc;
   const hour = 36e5, dayMs = 864e5;
-  const W = Math.max(320, box.clientWidth || 640), P = { l: 8, r: 68, b: 20 }, H = sc.H + P.b;
+  // 幅は入れ物に合わせる (最小幅を固定すると狭い画面で列を押し広げてはみ出す)。
+  // 狭いほど考察前の足を短くして、1本あたりの幅を確保する (96h → 72h → 48h)
+  const W = Math.max(240, box.clientWidth || 640), P = { l: 8, r: W < 420 ? 60 : 68, b: 20 }, H = sc.H + P.b;
+  const hoursBack = W >= 600 ? 96 : W >= 420 ? 72 : 48;
+  const rows = cd.rows.filter(k => k.t >= ref - hoursBack * hour);
+  if (!rows.length) { box.innerHTML = '<p class="empty">表示できる足がありません。</p>'; return; }
   const plotR = W - P.r, axisY = sc.H - 12;
   // 右側 1/5 は空けておく (最新の足が横幅の 4/5 の位置)。水準の名前をそこに置き、足と重ならないようにする
   const t0 = rows[0].t, tLast = Math.max(rows[rows.length - 1].t + hour, Math.min(now, ref + 10 * dayMs));
