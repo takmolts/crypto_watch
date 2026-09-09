@@ -508,7 +508,8 @@ function eventsFromRun(list) {
     const cat = CATS.find(c => c.key === e.cat) || CATS[CATS.length - 1];
     let title = stripMd(e.title);
     if (title.length > 60) title = title.slice(0, 58) + '…';
-    out.push({ t: isNum(t) ? t : null, allDay: !!e.all_day, title, detail: tidyMd(e.note), cat });
+    const notes = (Array.isArray(e.notes) ? e.notes : []).map(s => stripMd(s)).filter(Boolean);
+    out.push({ t: isNum(t) ? t : null, allDay: !!e.all_day, title, detail: tidyMd(e.note), notes, cat });
   }
   return out;
 }
@@ -654,9 +655,17 @@ function renderCalendar() {
     li.style.setProperty('--c', `var(${e.cat.c})`);
     if (isNum(e.t) && e.t < now) li.classList.add('past');
     li.innerHTML = `<div class="d">${isNum(e.t) ? esc(fmtTs(e.t, e.allDay ? 'd' : 'dt')) + (e.allDay ? '' : ` ${TZ.name}`) : '日付なし'} · ${esc(e.cat.label)}${e.auto ? ' · 自動補完' : ''}</div>` +
-      `<div class="t">${esc(e.title)}</div>${e.detail ? '<div class="e md"></div>' : ''}`;
+      `<div class="t">${esc(e.title)}</div>${e.detail ? '<div class="e md"></div>' : ''}` +
+      (e.notes?.length ? `<div class="why"><div class="why-h">AI解説 · 参考程度</div><ul>${e.notes.map(s => `<li>${esc(s)}</li>`).join('')}</ul></div>` : '');
     if (e.detail) setHTML(li.querySelector('.e'), md(e.detail));
     list.appendChild(li);
+  }
+  $('#event-ai-note')?.remove();   // 再描画で増えないように
+  if (events.some(e => e.notes?.length)) {
+    const p = document.createElement('p');
+    p.className = 'note'; p.id = 'event-ai-note';
+    p.textContent = 'カード内の「AI解説」は考察を書いた Claude が添えたもので、発表主体・頻度・効き方の説明は参考程度に。日時や内容は公式の経済カレンダーで確認を。';
+    list.insertAdjacentElement('afterend', p);
   }
 }
 

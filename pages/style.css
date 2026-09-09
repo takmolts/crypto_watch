@@ -146,12 +146,16 @@ figcaption { font-size: 12.5px; color: var(--text-2); white-space: pre-wrap; mar
 .timeline .tip, .chart .tip, .pchart .tip { position: absolute; pointer-events: none; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 4px 9px; font-size: 11.5px; box-shadow: 0 2px 8px rgba(0,0,0,.14); display: none; max-width: 340px; z-index: 2; }
 .timeline .tip b { display: block; }
 .event-list { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 8px; }
-.event-list li { border: 1px solid var(--border); border-left: 4px solid var(--c, var(--border)); border-radius: 8px; padding: 8px 12px; background: var(--surface); }
+.event-list > li { border: 1px solid var(--border); border-left: 4px solid var(--c, var(--border)); border-radius: 8px; padding: 8px 12px; background: var(--surface); }
 .event-list .d { font-size: 12px; color: var(--text-3); font-variant-numeric: tabular-nums; }
 .event-list .t { font-weight: 650; font-size: 14px; }
 .event-list .e { font-size: 13px; color: var(--text-2); margin-top: 3px; }
 .event-list .e .md p { margin: 2px 0; }
-.event-list li.past { opacity: .6; }
+.event-list .why { margin: 6px 0 0; padding-top: 5px; font-size: 12.5px; color: var(--text-2); line-height: 1.55; border-top: 1px dashed var(--border); }
+.event-list .why-h { font-size: 10.5px; color: var(--text-3); letter-spacing: .03em; margin-bottom: 1px; }
+.event-list .why ul { margin: 0; padding-left: 1.1em; }
+.event-list .why li { margin: 1px 0; }
+.event-list > li.past { opacity: .6; }
 #cal-raw { margin-top: 12px; }
 
 /* analysis */

@@ -207,7 +207,8 @@ def parse_event_line(raw, ref):
             "ts": dt.astimezone(timezone.utc).isoformat(),
             "all_day": tm is None,
             "cat": cat if cat in EVENT_CATS else "other",
-            "title": title, "note": note.replace("**", "").strip()}
+            "title": title, "note": note.replace("**", "").strip(),
+            "notes": []}   # 解説の箇条書き (続く「  - 」行で埋める)
 
 
 def parse_events(mdtext, ref):
@@ -217,6 +218,11 @@ def parse_events(mdtext, ref):
 
     def grab(m):
         for raw in m.group(1).splitlines():
+            # 「  - …」の行は直前の予定の解説 (何のイベントか) として付ける
+            bm = re.match(r"^\s*[-*・]\s+(.*\S)", raw)
+            if bm and "|" not in bm.group(1) and events:
+                events[-1]["notes"].append(bm.group(1).strip())
+                continue
             ev = parse_event_line(raw, ref)
             if ev:
                 events.append(ev)
