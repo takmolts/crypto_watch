@@ -61,16 +61,20 @@
         <div id="tiles" class="tiles"></div>
         <p id="live-note" class="live-note" hidden></p>
         <div id="overview" class="md keypoints"></div>
-        <div class="two-col">
+        <div class="two-col levels">
           <div class="ladder-box">
             <h3>価格ラダー <small>壁・支持・磁石・フリップ (生レポートから)</small></h3>
             <div id="ladder"></div>
           </div>
-          <figure id="figure" hidden>
-            <img id="terrain" alt="オプション地形図" loading="lazy">
-            <figcaption id="caption"></figcaption>
-          </figure>
+          <div class="pchart-box">
+            <h3>値動き × オプション水準 <small id="pchart-sub">1h足に左と同じ水準を重ねる</small></h3>
+            <div id="pchart"></div>
+          </div>
         </div>
+        <figure id="figure" hidden>
+          <img id="terrain" alt="オプション地形図" loading="lazy">
+          <figcaption id="caption"></figcaption>
+        </figure>
       </section>
 
       <section class="section" id="sec-calendar">

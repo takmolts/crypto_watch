@@ -3,7 +3,7 @@
 
 const $ = (s, el = document) => el.querySelector(s);
 const KIND = { sched: '定時', trigger: '発火', manual: '手動' };
-const state = { site: null, cur: 'BTC', index: null, run: null, live: null };
+const state = { site: null, cur: 'BTC', index: null, run: null, live: null, candles: null };
 const dark = () => matchMedia('(prefers-color-scheme: dark)').matches;
 const TZ = (() => {
   try {
@@ -79,7 +79,7 @@ async function init() {
   $('#foot-updated').textContent = `サイト更新: ${fmtTs(state.site.updated)} (${TZ.label}) / 保持 ${state.site.keep_days} 日`;
   $('#btn-live').addEventListener('click', fetchLive);
   $('#btn-copy').addEventListener('click', copyReport);
-  addEventListener('resize', debounce(() => { if (state.run) { renderSeries(); renderCalendar(); renderLadder(); } }, 200));
+  addEventListener('resize', debounce(() => { if (state.run) { renderSeries(); renderCalendar(); renderLevels(); } }, 200));
   await loadCurrency(state.cur, p.get('r'));
 }
 
@@ -128,7 +128,7 @@ async function loadRun(stamp) {
   setStatus('');
   renderRunList(state.index.runs || [], stamp);
   renderRun();
-  renderLadder();
+  renderLevels();
   renderCalendar();
   renderAnalysis();
   renderSeries();
@@ -244,28 +244,55 @@ const LADDER_STYLE = {
   magnet: { c: '--c-cb', w: 2, dash: '' }, maxpain: { c: '--neutral', w: 2, dash: '2 3' },
   flip: { c: '--warn', w: 2, dash: '6 3' }, etfwall: { c: '--accent', w: 1, dash: '1 3' }, etfsup: { c: '--c-expiry', w: 1, dash: '1 3' },
 };
-function renderLadder() {
-  const box = $('#ladder');
-  box.innerHTML = '';
-  const { levels, spot, band } = parseLevels(state.run);
-  if (!isNum(spot) || !levels.length) { box.innerHTML = '<p class="empty">水準を読める生レポートがありません。</p>'; return; }
-  // 表示範囲: 現値 ±25% 以内の水準 (遠い LEAPS 壁は落とす)
+const svgEl = (tag, attrs, txt) => { const e = document.createElementNS('http://www.w3.org/2000/svg', tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (txt != null) e.textContent = txt; return e; };
+
+// ラダーと値動きチャートは同じ縦軸 (lo/hi/H/Y) を共有し、横に並べたとき水準の高さが揃うようにする。
+// 足はブラウザから直接取り (Binance → Coinbase)、届いたら両方を描き直す
+function renderLevels() {
+  const run = state.run;
+  const key = `${run.currency}:${run.stamp}`;
+  if (state.candles?.key !== key) {
+    state.candles = { key, rows: null, src: '', err: '' };
+    loadCandles(run).then(r => { if (state.run === run) { Object.assign(state.candles, r); renderLevels(); } });
+  }
+  const sc = levelScale(run, state.candles.rows);
+  renderLadder(sc);
+  renderPriceChart(sc);
+}
+async function loadCandles(run) {
+  const c = run.currency, ref = new Date(run.ts).getTime();
+  // 考察の 96 時間前から、いま (考察後は最長 10 日) まで
+  const start = ref - 96 * 36e5, end = Math.min(Date.now(), ref + 10 * 864e5);
+  let err = '';
+  try {
+    // Binance: [openTime, open, high, low, close, …] 最大 1000 本
+    const a = await getJSON(`https://api.binance.com/api/v3/klines?symbol=${c}USDT&interval=1h&startTime=${start}&endTime=${end}&limit=1000`);
+    const rows = a.map(k => ({ t: +k[0], o: +k[1], h: +k[2], l: +k[3], c: +k[4] })).filter(k => isNum(k.c));
+    if (rows.length) return { rows, src: `Binance ${c}USDT 1h足` };
+  } catch (e) { err = String(e.message || e); }
+  try {
+    // Coinbase: 新しい順、最大 300 本 [time(s), low, high, open, close, volume]
+    const s2 = Math.max(start, end - 300 * 36e5);
+    const a = await getJSON(`https://api.exchange.coinbase.com/products/${c}-USD/candles?granularity=3600&start=${new Date(s2).toISOString()}&end=${new Date(end).toISOString()}`);
+    const rows = a.map(k => ({ t: k[0] * 1000, l: +k[1], h: +k[2], o: +k[3], c: +k[4] })).filter(k => isNum(k.c)).sort((x, y) => x.t - y.t);
+    if (rows.length) return { rows, src: `Coinbase ${c}-USD 1h足` };
+  } catch (e) { err = String(e.message || e); }
+  return { rows: null, err: err || '足データなし' };
+}
+function levelScale(run, candles) {
+  const { levels, spot, band } = parseLevels(run);
+  if (!isNum(spot) || !levels.length) return { ok: false, spot, levels };
+  // 表示範囲: 現値 ±20% 以内の水準 (遠い LEAPS 壁は落とす)。足があればその高値安値も範囲に入れる
   const lv = levels.filter(l => Math.abs(l.p - spot) / spot <= 0.20).sort((a, b) => b.p - a.p);
   lv.push({ p: spot, type: 'spot', label: '現値' });
   lv.sort((a, b) => b.p - a.p);
   const ps = lv.map(l => l.p).concat([spot], band ? [band.lo, band.hi] : []);
+  if (candles?.length) ps.push(Math.min(...candles.map(k => k.l)), Math.max(...candles.map(k => k.h)));
   let hi = Math.max(...ps), lo = Math.min(...ps);
   const pad = (hi - lo) * 0.06 || spot * 0.02; hi += pad; lo -= pad;
-  const W = Math.max(300, Math.min(520, box.clientWidth || 340)), rowH = 22;
-  const H = Math.max(240, (lv.length + 1) * rowH + 30);
+  const rowH = 22;
+  const H = Math.max(candles?.length ? 300 : 240, (lv.length + 1) * rowH + 30);
   const Y = (p) => 16 + (1 - (p - lo) / (hi - lo)) * (H - 32);
-  const x0 = 10, x1 = Math.round(W * 0.3);   // 目盛りの線 (右側はラベル)
-  const ns = 'http://www.w3.org/2000/svg';
-  const svg = document.createElementNS(ns, 'svg');
-  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
-  const el = (tag, attrs, txt) => { const e = document.createElementNS(ns, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (txt != null) e.textContent = txt; return e; };
-  if (band) svg.appendChild(el('rect', { x: x0, y: Y(band.hi), width: x1 - x0, height: Y(band.lo) - Y(band.hi), fill: cssVar('--accent'), opacity: .12, rx: 3 }));
-  svg.appendChild(el('line', { x1: (x0 + x1) / 2, x2: (x0 + x1) / 2, y1: 8, y2: H - 8, stroke: cssVar('--border'), 'stroke-width': 1 }));
   // ラベルの重なり回避: 上から順に最低 rowH 空ける
   let lastY = -Infinity;
   const rows = [];
@@ -277,6 +304,19 @@ function renderLadder() {
   // 下端をはみ出したら全体を詰め直す
   const over = lastY - (H - 10);
   if (over > 0) rows.forEach((r, i) => { r.y -= over * (i + 1) / rows.length; });
+  return { ok: true, spot, band, levels, lv, rows, lo, hi, H, Y, far: levels.length - (lv.length - 1) };
+}
+function renderLadder(sc) {
+  const box = $('#ladder');
+  box.innerHTML = '';
+  if (!sc.ok) { box.innerHTML = '<p class="empty">水準を読める生レポートがありません。</p>'; return; }
+  const { spot, band, rows, H, Y, far } = sc;
+  const W = Math.max(300, Math.min(520, box.clientWidth || 340));
+  const x0 = 10, x1 = Math.round(W * 0.3);   // 目盛りの線 (右側はラベル)
+  const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}` });
+  const el = svgEl;
+  if (band) svg.appendChild(el('rect', { x: x0, y: Y(band.hi), width: x1 - x0, height: Y(band.lo) - Y(band.hi), fill: cssVar('--accent'), opacity: .12, rx: 3 }));
+  svg.appendChild(el('line', { x1: (x0 + x1) / 2, x2: (x0 + x1) / 2, y1: 8, y2: H - 8, stroke: cssVar('--border'), 'stroke-width': 1 }));
   for (const { l, y } of rows) {
     if (l.type === 'spot') {
       const sy = Y(spot);
@@ -299,11 +339,106 @@ function renderLadder() {
   wrap.className = 'ladder';
   wrap.appendChild(svg);
   box.appendChild(wrap);
-  const far = levels.length - (lv.length - 1);
   const note = document.createElement('p');
   note.className = 'note';
   note.textContent = `現値 ±20% の水準のみ${far ? ` (遠い ${far} 本は省略)` : ''}。実線=主力、破線=次点、点線=米国ETFの原資産換算。` +
     (band ? `薄い帯は ${band.label} (${fmtPrice(band.lo)}〜${fmtPrice(band.hi)})。` : '');
+  box.appendChild(note);
+}
+// 値動き (1h足) にラダーと同じ水準を横線で重ねる。縦軸はラダーと共有しているので横に並べると高さが揃う
+function renderPriceChart(sc) {
+  const box = $('#pchart'), sub = $('#pchart-sub');
+  box.innerHTML = '';
+  const cd = state.candles || {};
+  if (!sc.ok) { box.innerHTML = '<p class="empty">水準が無いので描けません。</p>'; return; }
+  if (!cd.rows) { box.innerHTML = `<p class="empty">${cd.err ? `足データの取得に失敗 (${esc(cd.err)})。` : '足データを取得中…'}</p>`; return; }
+  const run = state.run, rows = cd.rows, ref = new Date(run.ts).getTime(), now = Date.now();
+  const { Y, band, spot } = sc;
+  const hour = 36e5, dayMs = 864e5;
+  const W = Math.max(320, box.clientWidth || 640), P = { l: 8, r: 68, b: 20 }, H = sc.H + P.b;
+  const plotR = W - P.r, axisY = sc.H - 12;
+  const t0 = rows[0].t, t1 = rows[rows.length - 1].t + hour;
+  const X = (t) => P.l + (t - t0) / (t1 - t0) * (plotR - P.l);
+  const el = svgEl;
+  const svg = el('svg', { viewBox: `0 0 ${W} ${H}` });
+  const grid = cssVar('--border');
+  // 1σ帯と週末
+  if (band) svg.appendChild(el('rect', { x: P.l, y: Y(band.hi), width: plotR - P.l, height: Y(band.lo) - Y(band.hi), fill: cssVar('--accent'), opacity: .10 }));
+  const startDay = (t) => { const d = new Date(t); d.setHours(0, 0, 0, 0); return d.getTime(); };
+  const days = Math.ceil((t1 - t0) / dayMs), step = Math.max(1, Math.ceil(days / ((plotR - P.l) / 64)));
+  for (let d = startDay(t0), i = 0; d < t1; d += dayMs, i++) {
+    const wd = new Date(d).getDay();
+    const xa = Math.max(P.l, X(d)), xb = Math.min(plotR, X(d + dayMs));
+    if ((wd === 0 || wd === 6) && xb > xa) svg.appendChild(el('rect', { x: xa, y: 16, width: xb - xa, height: axisY - 16, fill: cssVar('--text-3'), opacity: .07 }));
+    if (d >= t0 && i % step === 0) {
+      svg.appendChild(el('line', { x1: X(d), x2: X(d), y1: axisY, y2: axisY + 4, stroke: grid }));
+      svg.appendChild(el('text', { x: X(d) + 3, y: axisY + 15 }, fmtTs(d, 'd').replace(/\(|\)/g, ' ')));
+    }
+  }
+  svg.appendChild(el('line', { x1: P.l, x2: plotR, y1: axisY, y2: axisY, stroke: grid }));
+  // 足: 1本あたりの幅が取れればローソク、細ければ高安の帯 + 終値線
+  const bw = (plotR - P.l) / ((t1 - t0) / hour);
+  const up = cssVar('--bull'), dn = cssVar('--bear');
+  if (bw >= 2.5) {
+    for (const k of rows) {
+      const x = X(k.t + hour / 2), col = k.c >= k.o ? up : dn;
+      svg.appendChild(el('line', { x1: x, x2: x, y1: Y(k.h), y2: Y(k.l), stroke: col, 'stroke-width': 1 }));
+      svg.appendChild(el('rect', { x: x - bw * 0.36, y: Math.min(Y(k.o), Y(k.c)), width: bw * 0.72, height: Math.max(1, Math.abs(Y(k.o) - Y(k.c))), fill: col }));
+    }
+  } else {
+    const hiPath = rows.map((k, i) => `${i ? 'L' : 'M'}${X(k.t + hour / 2).toFixed(1)},${Y(k.h).toFixed(1)}`).join('');
+    const loPath = rows.slice().reverse().map(k => `L${X(k.t + hour / 2).toFixed(1)},${Y(k.l).toFixed(1)}`).join('');
+    svg.appendChild(el('path', { d: hiPath + loPath + 'Z', fill: cssVar('--text-3'), opacity: .2 }));
+    svg.appendChild(el('path', { d: rows.map((k, i) => `${i ? 'L' : 'M'}${X(k.t + hour / 2).toFixed(1)},${Y(k.c).toFixed(1)}`).join(''), fill: 'none', stroke: cssVar('--text'), 'stroke-width': 1.5, 'stroke-linejoin': 'round' }));
+  }
+  // 考察時点 / いま (右端に寄っていたら文字は線の左に出す)
+  const mark = (t, text, col, dash, flip) => {
+    const x = X(t);
+    svg.appendChild(el('line', { x1: x, x2: x, y1: 16, y2: axisY, stroke: col, 'stroke-dasharray': dash }));
+    svg.appendChild(el('text', { x: x + (flip ? -3 : 3), y: 12, class: 'mark', 'text-anchor': flip ? 'end' : 'start' }, text));
+  };
+  // 「いま」は常に線の右 (上段はチップが無いので右端でもはみ出さない)、「考察時点」は右端に寄っていたら線の左
+  if (ref >= t0 && ref <= t1) mark(ref, '考察時点', cssVar('--text-2'), '4 3', X(ref) > plotR - 60);
+  if (now > ref + hour && now <= t1) mark(now, 'いま', cssVar('--text-3'), '2 3', false);
+  // 水準の横線。右端のチップと名前はラダーのラベルと同じ高さ (重なり回避済み) に置き、線とずれていれば引き出し線で結ぶ
+  for (const { l, y } of sc.rows) {
+    const isSpot = l.type === 'spot';
+    const st = isSpot ? { c: '--text', w: 1.5, dash: '' } : (LADDER_STYLE[l.type] || LADDER_STYLE.wall2);
+    const col = cssVar(st.c), ly = Y(l.p);
+    svg.appendChild(el('line', { x1: P.l, x2: plotR, y1: ly, y2: ly, stroke: col, 'stroke-width': st.w, 'stroke-dasharray': st.dash, opacity: isSpot ? .6 : .85 }));
+    if (Math.abs(ly - y) > 2) svg.appendChild(el('line', { x1: plotR, x2: plotR + 6, y1: ly, y2: y, stroke: col, 'stroke-width': 1, opacity: .7 }));
+    svg.appendChild(el('rect', { x: plotR + 6, y: y - 8, width: P.r - 8, height: 16, rx: 3, fill: col }));
+    svg.appendChild(el('text', { x: plotR + 10, y: y + 4, class: isSpot ? 'chip inv' : 'chip' }, Math.round(l.p).toLocaleString('en-US')));
+    svg.appendChild(el('text', { x: plotR - 10, y: y + 4, class: 'lv', 'text-anchor': 'end', fill: col }, isSpot ? '現値 (考察時点)' : l.label.replace(/\s[\d,]+枚$/, '')));
+  }
+  // カーソル追従の四本値
+  const cursor = el('line', { y1: 16, y2: axisY, stroke: grid, visibility: 'hidden' });
+  svg.appendChild(cursor);
+  const wrap = document.createElement('div');
+  wrap.className = 'pchart';
+  const tip = document.createElement('div');
+  tip.className = 'tip';
+  wrap.appendChild(svg); wrap.appendChild(tip);
+  box.appendChild(wrap);
+  svg.addEventListener('mousemove', ev => {
+    const r = svg.getBoundingClientRect();
+    const t = t0 + ((ev.clientX - r.left) / r.width * W - P.l) / (plotR - P.l) * (t1 - t0);
+    const k = rows.reduce((a, b) => Math.abs(b.t + hour / 2 - t) < Math.abs(a.t + hour / 2 - t) ? b : a);
+    const x = X(k.t + hour / 2);
+    cursor.setAttribute('x1', x); cursor.setAttribute('x2', x); cursor.setAttribute('visibility', 'visible');
+    tip.style.display = 'block';
+    tip.textContent = `${fmtTs(k.t)}  始 ${fmtPrice(k.o)} 高 ${fmtPrice(k.h)} 安 ${fmtPrice(k.l)} 終 ${fmtPrice(k.c)}${isNum(spot) ? ` (現値比 ${fmtPct((k.c - spot) / spot * 100, 1)})` : ''}`;
+    const cx = ev.clientX - wrap.getBoundingClientRect().left;
+    tip.style.left = `${Math.max(0, Math.min(cx + 12, wrap.clientWidth - tip.offsetWidth - 6))}px`;
+    tip.style.top = `${ev.clientY - wrap.getBoundingClientRect().top - 32}px`;
+  });
+  svg.addEventListener('mouseleave', () => { cursor.setAttribute('visibility', 'hidden'); tip.style.display = 'none'; });
+  const last = rows[rows.length - 1];
+  sub.textContent = `${cd.src} · 最新 ${fmtPrice(last.c)} (${fmtTs(last.t)})`;
+  const note = document.createElement('p');
+  note.className = 'note';
+  note.textContent = `横線はオプション建玉 (Deribit / 米国ETF) から出した水準で、左のラダーと同じ縦軸 (色と線種も同じ)。右端に価格と名前。縦の破線は考察時点。` +
+    `足は ${cd.src.split(' ')[0]} のもので、Deribit 指数とは 0.1% 前後ずれる。`;
   box.appendChild(note);
 }
 
