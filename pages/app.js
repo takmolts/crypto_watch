@@ -246,8 +246,8 @@ const LADDER_STYLE = {
 };
 const svgEl = (tag, attrs, txt) => { const e = document.createElementNS('http://www.w3.org/2000/svg', tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (txt != null) e.textContent = txt; return e; };
 
-// ラダーと値動きチャートは同じ縦軸 (lo/hi/H/Y) を共有し、横に並べたとき水準の高さが揃うようにする。
-// 足はブラウザから直接取り (Binance → Coinbase)、届いたら両方を描き直す
+// ラダー (全水準を等間隔の縦軸で) と値動きチャート (足の値幅にフォーカスし、範囲内の水準だけ横線) を並べる。
+// 足はブラウザから直接取り (Binance → Coinbase)、届いたらチャートを描き直す
 function renderLevels() {
   const run = state.run;
   const key = `${run.currency}:${run.stamp}`;
@@ -282,15 +282,15 @@ async function loadCandles(run) {
 function levelScale(run, candles) {
   const { levels, spot, band } = parseLevels(run);
   if (!isNum(spot) || !levels.length) return { ok: false, spot, levels };
-  // 表示範囲: 現値 ±20% 以内の水準 (遠い LEAPS 壁は落とす)。足があればその高値安値も範囲に入れる
+  // 表示範囲: 現値 ±20% 以内の水準 (遠い LEAPS 壁は落とす)
   const lv = levels.filter(l => Math.abs(l.p - spot) / spot <= 0.20).sort((a, b) => b.p - a.p);
   lv.push({ p: spot, type: 'spot', label: '現値' });
   lv.sort((a, b) => b.p - a.p);
   const ps = lv.map(l => l.p).concat([spot], band ? [band.lo, band.hi] : []);
-  if (candles?.length) ps.push(Math.min(...candles.map(k => k.l)), Math.max(...candles.map(k => k.h)));
   let hi = Math.max(...ps), lo = Math.min(...ps);
   const pad = (hi - lo) * 0.06 || spot * 0.02; hi += pad; lo -= pad;
   const rowH = 22;
+  // 高さはチャートと揃える (チャートは同じ H を使う)
   const H = Math.max(candles?.length ? 300 : 240, (lv.length + 1) * rowH + 30);
   const Y = (p) => 16 + (1 - (p - lo) / (hi - lo)) * (H - 32);
   // ラベルの重なり回避: 上から順に最低 rowH 空ける
@@ -353,17 +353,31 @@ function renderPriceChart(sc) {
   if (!sc.ok) { box.innerHTML = '<p class="empty">水準が無いので描けません。</p>'; return; }
   if (!cd.rows) { box.innerHTML = `<p class="empty">${cd.err ? `足データの取得に失敗 (${esc(cd.err)})。` : '足データを取得中…'}</p>`; return; }
   const run = state.run, rows = cd.rows, ref = new Date(run.ts).getTime(), now = Date.now();
-  const { Y, band, spot } = sc;
+  const { band, spot, levels } = sc;
   const hour = 36e5, dayMs = 864e5;
   const W = Math.max(320, box.clientWidth || 640), P = { l: 8, r: 68, b: 20 }, H = sc.H + P.b;
   const plotR = W - P.r, axisY = sc.H - 12;
   const t0 = rows[0].t, t1 = rows[rows.length - 1].t + hour;
   const X = (t) => P.l + (t - t0) / (t1 - t0) * (plotR - P.l);
+  // 縦軸は足の値幅に合わせる (ラダーとは独立)。主力の壁と支持が現値 ±6% 以内なら範囲に取り込み、器が見えるようにする
+  let lo = Math.min(...rows.map(k => k.l)), hi = Math.max(...rows.map(k => k.h));
+  for (const l of levels) if ((l.type === 'wall' || l.type === 'support') && Math.abs(l.p - spot) / spot <= 0.06) { lo = Math.min(lo, l.p); hi = Math.max(hi, l.p); }
+  { const pad = (hi - lo) * 0.10 || spot * 0.01; lo -= pad; hi += pad; }
+  const Y = (p) => 16 + (1 - (p - lo) / (hi - lo)) * (axisY - 16);
   const el = svgEl;
   const svg = el('svg', { viewBox: `0 0 ${W} ${H}` });
   const grid = cssVar('--border');
-  // 1σ帯と週末
-  if (band) svg.appendChild(el('rect', { x: P.l, y: Y(band.hi), width: plotR - P.l, height: Y(band.lo) - Y(band.hi), fill: cssVar('--accent'), opacity: .10 }));
+  // 価格の目盛 (キリのいい刻み) を右軸に薄く。水準のチップが上に重なる
+  const tickStep = (() => { const raw = (hi - lo) / 5, e = Math.pow(10, Math.floor(Math.log10(raw))); return [1, 2, 2.5, 5, 10].map(m => m * e).find(s => s >= raw) || raw; })();
+  for (let p = Math.ceil(lo / tickStep) * tickStep; p < hi; p += tickStep) {
+    svg.appendChild(el('line', { x1: P.l, x2: plotR, y1: Y(p), y2: Y(p), stroke: grid, 'stroke-width': 1, opacity: .7 }));
+    svg.appendChild(el('text', { x: plotR + 8, y: Y(p) + 4, class: 'tick' }, Math.round(p).toLocaleString('en-US')));
+  }
+  // 1σ帯は塗ると範囲より広いとき背景に見えてしまうので、範囲に入る端だけ薄い線で示す
+  if (band) for (const [p, t] of [[band.hi, '+1σ'], [band.lo, '-1σ']]) if (p > lo && p < hi) {
+    svg.appendChild(el('line', { x1: P.l, x2: plotR, y1: Y(p), y2: Y(p), stroke: cssVar('--accent'), 'stroke-width': 1, 'stroke-dasharray': '2 4', opacity: .6 }));
+    svg.appendChild(el('text', { x: P.l + 3, y: Y(p) - 3, class: 'lv', fill: cssVar('--accent') }, `7日IV ${t} ${fmtPrice(p)}`));
+  }
   const startDay = (t) => { const d = new Date(t); d.setHours(0, 0, 0, 0); return d.getTime(); };
   const days = Math.ceil((t1 - t0) / dayMs), step = Math.max(1, Math.ceil(days / ((plotR - P.l) / 64)));
   for (let d = startDay(t0), i = 0; d < t1; d += dayMs, i++) {
@@ -400,17 +414,26 @@ function renderPriceChart(sc) {
   // 「いま」は常に線の右 (上段はチップが無いので右端でもはみ出さない)、「考察時点」は右端に寄っていたら線の左
   if (ref >= t0 && ref <= t1) mark(ref, '考察時点', cssVar('--text-2'), '4 3', X(ref) > plotR - 60);
   if (now > ref + hour && now <= t1) mark(now, 'いま', cssVar('--text-3'), '2 3', false);
-  // 水準の横線。右端のチップと名前はラダーのラベルと同じ高さ (重なり回避済み) に置き、線とずれていれば引き出し線で結ぶ
-  for (const { l, y } of sc.rows) {
+  // 見える範囲にある水準だけ横線にする。右端のチップは重ならないよう上から順に 18px 空け、線とずれていれば引き出し線で結ぶ
+  const shown = levels.filter(l => l.p > lo && l.p < hi).concat(isNum(spot) && spot > lo && spot < hi ? [{ p: spot, type: 'spot', label: '現値 (考察時点)' }] : [])
+    .sort((a, b) => b.p - a.p);
+  const chipH = 16, chipGap = 18;
+  const chips = [];
+  let lastY = -Infinity;
+  for (const l of shown) { let y = Math.max(Y(l.p), 16 + chipH / 2); if (y - lastY < chipGap) y = lastY + chipGap; lastY = y; chips.push({ l, y }); }
+  const over = lastY - (axisY - chipH / 2);
+  if (over > 0) chips.forEach((c, i) => { c.y -= over * (i + 1) / chips.length; });
+  for (const { l, y } of chips) {
     const isSpot = l.type === 'spot';
     const st = isSpot ? { c: '--text', w: 1.5, dash: '' } : (LADDER_STYLE[l.type] || LADDER_STYLE.wall2);
     const col = cssVar(st.c), ly = Y(l.p);
     svg.appendChild(el('line', { x1: P.l, x2: plotR, y1: ly, y2: ly, stroke: col, 'stroke-width': st.w, 'stroke-dasharray': st.dash, opacity: isSpot ? .6 : .85 }));
     if (Math.abs(ly - y) > 2) svg.appendChild(el('line', { x1: plotR, x2: plotR + 6, y1: ly, y2: y, stroke: col, 'stroke-width': 1, opacity: .7 }));
-    svg.appendChild(el('rect', { x: plotR + 6, y: y - 8, width: P.r - 8, height: 16, rx: 3, fill: col }));
+    svg.appendChild(el('rect', { x: plotR + 6, y: y - chipH / 2, width: P.r - 8, height: chipH, rx: 3, fill: col }));
     svg.appendChild(el('text', { x: plotR + 10, y: y + 4, class: isSpot ? 'chip inv' : 'chip' }, Math.round(l.p).toLocaleString('en-US')));
-    svg.appendChild(el('text', { x: plotR - 10, y: y + 4, class: 'lv', 'text-anchor': 'end', fill: col }, isSpot ? '現値 (考察時点)' : l.label.replace(/\s[\d,]+枚$/, '')));
+    svg.appendChild(el('text', { x: plotR - 10, y: y + 4, class: 'lv', 'text-anchor': 'end', fill: col }, isSpot ? l.label : l.label.replace(/\s[\d,]+枚$/, '')));
   }
+  const hidden = levels.filter(l => !(l.p > lo && l.p < hi)).sort((a, b) => Math.abs(a.p - spot) - Math.abs(b.p - spot));
   // カーソル追従の四本値
   const cursor = el('line', { y1: 16, y2: axisY, stroke: grid, visibility: 'hidden' });
   svg.appendChild(cursor);
@@ -437,8 +460,9 @@ function renderPriceChart(sc) {
   sub.textContent = `${cd.src} · 最新 ${fmtPrice(last.c)} (${fmtTs(last.t)})`;
   const note = document.createElement('p');
   note.className = 'note';
-  note.textContent = `横線はオプション建玉 (Deribit / 米国ETF) から出した水準で、左のラダーと同じ縦軸 (色と線種も同じ)。右端に価格と名前。縦の破線は考察時点。` +
-    `足は ${cd.src.split(' ')[0]} のもので、Deribit 指数とは 0.1% 前後ずれる。`;
+  note.textContent = `横線はオプション建玉 (Deribit / 米国ETF) から出した水準のうち、足の値幅に入るもの (色と線種は左のラダーと同じ)。縦の破線は考察時点。` +
+    `足は ${cd.src.split(' ')[0]} のもので、Deribit 指数とは 0.1% 前後ずれる。` +
+    (hidden.length ? ` 範囲外: ${hidden.slice(0, 4).map(l => `${l.label.replace(/\s[\d,]+枚$/, '')} ${fmtPrice(l.p)}`).join(' / ')}${hidden.length > 4 ? ` ほか ${hidden.length - 4} 本` : ''} (左のラダー参照)。` : '');
   box.appendChild(note);
 }
 
